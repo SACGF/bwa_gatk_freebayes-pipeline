@@ -1,0 +1,391 @@
+import os
+import sys
+workdir: config['workdir']
+include_prefix = config['ruledir']
+
+_data_type = ['WGS', 'WES', 'Panel', 'Amplicon-Panel']
+WGS, WES, Panel, Amplicon = [t.lower() for t in _data_type]
+
+BASE_NAME = config["base_name"]
+DATA_TYPE = config["data_type"] #wgs, wes, or panel, or amplicon-panel
+PLATFORM = config["platform"] #ILLUMINA or something else
+SAMPLE_NAMES = config['sample_names']
+SAMPLE_TO_UNITS = config['sample_to_units']
+SAMPLE_TO_BAM = config['sample_to_bam']
+SAMPLE_TO_ANALYSIS_READY_BAM = config['sample_to_analysis_ready_bam']
+SAMPLE_TO_ANALYSIS_READY_BAM_INDEX = config['sample_to_analysis_ready_bam_index']
+PASSED_GVCFS = config['passed_gvcfs']
+R1_ADAPTER, R2_ADAPTER = config["r1_adapter"], config["r2_adapter"]
+CALLERS = config["callers"]
+
+_no_bam_created_by_pipeline = False if (SAMPLE_TO_UNITS or SAMPLE_TO_BAM) else True
+# SEPARATE_CHR_FOR_GATK_HC = config['separate_chr_for_gatk_hc']
+FORCE_GATK_HARD_FILTER = config['force_GATK_hard_filter']
+FORCE_EXTRA_JOINT_GT = config['force_extra_joint_gt']
+KEEP_TEMP_FILES = config['keep_temp_files']
+_just_get_bam_stats = config['just_get_bam_stats']
+if _just_get_bam_stats:
+    CALLERS = []
+
+if FORCE_GATK_HARD_FILTER:
+    PERFORM_EXTRA_JOINT_GT = False
+    _perform_gatk_vqsr = False
+elif FORCE_EXTRA_JOINT_GT:
+    PERFORM_EXTRA_JOINT_GT = True
+    _perform_gatk_vqsr = True
+else:#note PERFORM_EXTRA_JOINT_GT is only for those with PLATFORM == 'ILLUMINA'
+    PERFORM_EXTRA_JOINT_GT = \
+            True if len(SAMPLE_NAMES) < 30 and DATA_TYPE == 'wes' and PLATFORM.lower() == 'ILLUMINA'.lower() else False
+    _perform_gatk_vqsr = True if DATA_TYPE == 'wgs' or PERFORM_EXTRA_JOINT_GT or \
+            (DATA_TYPE == 'wes' and len(SAMPLE_NAMES) >= 30) or \
+            (PASSED_GVCFS and (DATA_TYPE == 'wgs' or DATA_TYPE == 'wes') ) else False
+
+SPECIES = config['species'] # for now it's only 'HUMAN'
+
+RANDOM_STR = config['random_str']
+
+STOP_AFTER = config["stop_after"] #'gatk_bqsr', or 'gatk_hc'
+SKIPS = config["skips"] #choices=['marking_duplicates', 'gatk_bqsr', 'bam_stats', 'qualimap', 'variant_stats']
+# STEP_REALN = 'gatk_realn'
+STEP_BQSR = 'gatk_bqsr'
+STEP_HC = 'gatk_hc'
+STEP_DEDUP = 'marking_duplicates'
+STEP_BAM_STATS = 'bam_stats'
+STEP_QUALIMAP = 'qualimap'
+STEP_VAR_STATS = 'variant_stats'
+
+
+#controlling the annotation and standard filteration
+NOT_ANNOTATE = config['not_annotate']
+NOT_GENE_ANNOTATE = config['not_gene_annotate']
+ADD_CHRIS_GENE_LIST = config['add_chris_gene_list']
+ADD_VAF_COLUMN = config['add_VAF_column']
+TRIO = config['trio']
+# SKIP_SPREADSHEET_CREATE = config['skip_spreadsheet_create']
+SPREADSHEET_FORMAT = config['spreadsheet_format'] # xlsx or tsv
+# ANNOTATE_SCHEME = config['annotate_scheme']
+
+T_PER_SM = config["t_per_sm"]
+T_MAX = config["t_max"]
+
+#creat tmp_dirif not existing
+TMP_DIR = os.path.join(config['workdir'], 'tmp/')
+if not os.path.exists(TMP_DIR):
+    os.makedirs(TMP_DIR)
+
+REF = config["ref"]
+BWA = config["bwa"]
+CUTADAPT = config['cutadapt']
+BWAKIT_RUN_BWAMEM = config['bwakit_run_bwamem']
+SAMBAMBA = config["sambamba"]
+GATK = config["gatk"]
+JAVA8 = config["java8"]
+FREEBAYES_DIR = config["freebayes_dir"]
+# DIR_TO_WGS_CHR_BEDS = config["dir_to_wgs_chr_beds"]
+SNPSIFT = config["snpsift"]
+BCFTOOLS = config["bcftools"]
+IGVTOOLS = config['igvtools']
+VT = config['vt']
+BEDTOOLS = config['bedtools']
+BGZIP = config["bgzip"]
+TABIX = config["tabix"]
+QUALIMAP = config['qualimap']
+SACGF_ENV_RUNNER = config["sacgf_env_runner"]
+GATK_DNA_HARD_FILTERS_SCRIPT = config["gatk_dna_hard_filters_script"]
+VARIANT_LEVEL_ANNOTATE_SCRIPT = config['variant_level_annotate_script']
+GENE_AND_SAMPLE_LEVEL_ANNOTATIONY_SCRIPT = config['gene_and_sample_level_annotationy_script']
+STANDARD_FILTER_SCRIPT = config['standard_filter_script']
+COMBINE_FLAGSTAT_SCRIPT = config['combine_flagstat_script']
+COMBINE_REGIONAL_DEPTH_SCRIPT = config['combine_regional_depth_script']
+COMBINE_QUALIMAP_SCRIPT = config['combine_qualimap_script']
+FREEBAYES_BED_GENERATE_REGIONS_SCRIPT = config['freebayes_bed_generate_regions_script']
+REMOVE_AN_INTERMEDIATE_FILE_SCRIPT = config['remove_an_intermediate_file_script']
+TRIM_AMP_SAM_SCRIPT = config['trim_amp_sam_script']
+COMBINE_DEPTH_OF_COVERAGE_SCRIPT = config['combine_depth_of_coverage_script']
+COMBINE_KEY_BAM_STATS_SCRIPT = config['combine_key_bam_stats_script']
+SEX_PREDICTION_SCRIPT = config['sex_prediction_script']
+CALC_HOMOZYGOUS_VARIANT_RATE_SCRIPT = config['calc_homozygous_variant_rate_script']
+REMOVE_STAR_NON_VARIANTS_IN_VCF_SCRIPT = config['remove_star_non_variants_in_vcf_script']
+EMAIL = config['email']
+
+CALL_REGION_BED = config["call_region_bed"]
+DEPTHOFCOVERAGE_BED = config["depthofcoverage_bed"]
+QUALIMAP_BED = config["qualimap_bed"]
+AMP_INSERTS_BED = config["amp_inserts_bed"]
+AMP_REGIONS_BED = config["amp_regions_bed"]
+
+ALL_CHRMS = [str(i) for i in range(1,23)] + ['X', 'Y', 'MT']
+#GATK_REGION_PARAM for GATK's BQSR step
+GATK_REGION_PARAM = '-L %s' % CALL_REGION_BED if CALL_REGION_BED else \
+        ' '.join(['-L %s' % chr_ for chr_ in ALL_CHRMS])
+# B37_REGION_FOR_FREEBAYES = config['b37_region_for_freebayes']
+
+WALLTIME = config["walltime"]
+
+final_outputs = []
+
+##create bam files
+if SAMPLE_TO_UNITS or SAMPLE_TO_BAM:
+    if SAMPLE_TO_UNITS:
+        include: include_prefix + 'bwa.rules'
+        include: include_prefix + 'bam_merge.rules'
+    elif SAMPLE_TO_BAM:
+        include: include_prefix + 'bwakit.rules'
+    include: include_prefix + 'dedup.rules' #already skipable in the rule
+    if STEP_BQSR not in SKIPS:
+        include: include_prefix + 'gatk_bqsr.rules'
+    else:
+        include: include_prefix + 'skip_bqsr.rules'
+
+    if STOP_AFTER == STEP_BQSR:
+        bqsr_bams = ["bqsr/{sample}.bam".format(sample=sm) for sm in SAMPLE_NAMES]
+        bqsr_bam_idxes = ["bqsr/{sample}.bai".format(sample=sm) for sm in SAMPLE_NAMES]
+        final_outputs.extend(bqsr_bams)
+        final_outputs.extend(bqsr_bam_idxes)
+
+    SAMPLE_TO_ANALYSIS_READY_BAM = {}
+    SAMPLE_TO_ANALYSIS_READY_BAM_INDEX = {}
+
+    ##prepare analysis-ready bams with those created by the pipeline
+    #use the bam files created by the bqsr step
+    for sm in SAMPLE_NAMES:
+        SAMPLE_TO_ANALYSIS_READY_BAM[sm] = "bqsr/{sample}.bam".format(sample=sm)
+        SAMPLE_TO_ANALYSIS_READY_BAM_INDEX[sm] = "bqsr/{sample}.bai".format(sample=sm)
+
+##create freebayes variant VCF, and GATK GVCFS and variant VCF
+if PASSED_GVCFS or (STOP_AFTER == STEP_HC):
+    CALLERS = ['gatk']
+
+creat_chr_bed_onstart = False
+#do varaint calling
+GVCFS = []
+if PASSED_GVCFS:
+    CALL_REGION_BED = '' #to convert it from None to '', as it has to be string or a list of string in the input section of gatk_hc_for_separate_chr
+if (SAMPLE_TO_ANALYSIS_READY_BAM and STOP_AFTER != STEP_BQSR and not _just_get_bam_stats) or PASSED_GVCFS:
+    if 'freebayes' in CALLERS:
+        include: include_prefix + 'freebayes.rules'
+    if 'gatk' in CALLERS:
+        #gvcf="gatk_gvcf/{sample}.g.vcf.gz",
+        if not PASSED_GVCFS:
+            GVCFS = ["gatk_gvcf/{sample}.g.vcf.gz".format(sample=sm) for sm in SAMPLE_NAMES]
+            final_outputs.extend(GVCFS)
+
+        #creat sorted_chrs for both gatk_hc_for_separate_chr and gatk_each_chr_genotypeGVCFs
+        #creat chr_to_gatk_hc_chr_bed for gatk_each_chr_genotypeGVCFs if PASSED_GVCFS
+        sorted_chrs = []
+        chr_to_gatk_hc_chr_bed = {}
+        if DATA_TYPE == 'wgs' or PASSED_GVCFS or not CALL_REGION_BED:
+            sorted_chrs = ALL_CHRMS
+            if DATA_TYPE == 'wgs':
+                for chr_ in ALL_CHRMS: #just a letter for chrom, not actual bed file for WGS data
+                    chr_to_gatk_hc_chr_bed[chr_] = chr_
+        else:
+            if not CALL_REGION_BED:
+                import sys; sys.exit('Error: CALL_REGION_BED is missing')
+            creat_chr_bed_onstart = True # slipt the be file in the onstart section
+            with open(CALL_REGION_BED) as in_handle:
+                for line in in_handle:
+                    chr_ = line.split('\t')[0].strip()
+                    if chr_ not in sorted_chrs:
+                        sorted_chrs.append(chr_)
+                        chr_to_gatk_hc_chr_bed[chr_] = os.path.join(TMP_DIR, 'chr%s.bed' % chr_)
+        if not PASSED_GVCFS:
+            include: include_prefix + 'gatk_hc.rules'
+
+GVCFS = PASSED_GVCFS if PASSED_GVCFS else GVCFS
+if GVCFS:
+    #do GATK genotyping and then VQSR or hard-filtering
+    if not PASSED_GVCFS:
+        include: include_prefix + 'gatk_genotypeGVCFs.rules'
+    else:
+        #TODO: genotype PASSED_GVCFS; the gatk_each_chr_genotypeGVCFs in gatk_genotypeGVCFs.rules is for chrom g.vcf and can't handle PASSED_GVCFS
+        import sys; sys.exit('Error: PASSED_GVCFS can not be handled at the moment. Frank will implement it in the future')
+    if _perform_gatk_vqsr:
+        include: include_prefix + 'gatk_vqsr.rules' #also handle PERFORM_EXTRA_JOINT_GT
+    else:
+        include: include_prefix + 'gatk_hard_filters.rules'
+    # include: include_prefix + 'gatk_readBackedPhasing.rules'
+
+#create BAM stats
+if ((SAMPLE_TO_UNITS or SAMPLE_TO_BAM) and not (STEP_BAM_STATS in SKIPS)) \
+        or _just_get_bam_stats: #when creating BAM by pipeline, only if it is not stop at STEP_BQSR, it is able to get bam stats
+    if DEPTHOFCOVERAGE_BED is None:
+        sys.exit("Usage Error: A bed file is needed for --depthofcoverage_bed , or "
+                "'--skip BAM_Stats' is needed if you don't need bam stats to be generated")
+    INPUTS_FOR_KEY_BAM_STATS = []
+    include: include_prefix + 'flagstat.rules'
+    include: include_prefix + 'depthOfCoverage.rules'
+    final_outputs.append('bam_stats/{base_name}.flagstat.csv'.format(base_name=BASE_NAME))
+    INPUTS_FOR_KEY_BAM_STATS.append('bam_stats/{base_name}.flagstat.csv'.format(base_name=BASE_NAME))
+    final_outputs.append('bam_stats/{base_name}.depthOfCoverage.csv'.format(base_name=BASE_NAME))
+    INPUTS_FOR_KEY_BAM_STATS.append('bam_stats/{base_name}.depthOfCoverage.csv'.format(base_name=BASE_NAME))
+    if DATA_TYPE in [Panel, Amplicon]:
+        final_outputs.append('bam_stats/{base_name}.regional_mean_depth.tsv'.format(base_name=BASE_NAME))
+    if STEP_QUALIMAP not in SKIPS:
+        if QUALIMAP_BED is None:
+            sys.exit("Usage Error: A bed file is needed for --qualimap_bed , or "
+                    "'--skip BAM_Stats' or '--skip Qualimap' is needed if you don't need "
+                    "bam stats to be generated by Qualimap")
+        else:
+            #A bed checker for using qualimap; Qualimap requires the BED file with at least six columns.
+            for line in open(QUALIMAP_BED):
+                elements = line.split('\t')
+                if len(elements) >= 3:
+                    if len(elements) < 6:
+                        import sys; sys.exit('Error:\nIn QUALIMAP_BED (%s), there are less than six columns. '
+                                'Qualimap requires the BED file with at least six columns. '
+                                'See our wiki page for how to creat a BED file with at least six columns. '
+                                'If you do not need Qualimap, use option --skip Qualimap\n' % QUALIMAP_BED)
+        include: include_prefix + 'qualimap.rules'
+        final_outputs.append('bam_stats/{base_name}.qualimap.tsv'.format(base_name=BASE_NAME))
+        INPUTS_FOR_KEY_BAM_STATS.append('bam_stats/{base_name}.qualimap.tsv'.format(base_name=BASE_NAME))
+        final_outputs.extend(['bam_stats/{sample}/{sample}.qualimap.pdf'.format(sample=sm)
+            for sm in SAMPLE_NAMES])
+        final_outputs.extend(['bam_stats/{sample}/genome_results.txt'.format(sample=sm)
+            for sm in SAMPLE_NAMES])
+    if DATA_TYPE == Amplicon and (SAMPLE_TO_UNITS or SAMPLE_TO_BAM):
+        final_outputs.append('bam_stats/{base_name}.trim_stats.tsv'.format(base_name=BASE_NAME))
+    if len(INPUTS_FOR_KEY_BAM_STATS) >= 2:
+        final_outputs.append('bam_stats/{base_name}.key_bam_stats.tsv'.format(base_name=BASE_NAME))
+        include: include_prefix + 'combine_key_bam_stats.rules'
+
+
+## belows is for the last two steps (variant-annotation and variant stats) and the rule all with final_outputs
+if STOP_AFTER == None and CALLERS: # final outputs can be annotated and unfiltered and filtered VCF and Spreadsheets, and variant_stats files
+    include: include_prefix + 'variant_level_annotation.rules' #the rule can skip the annotation internally
+    vcf_annotated_outs = []
+    if 'gatk' in CALLERS:
+        vcf_annotated_outs.append("variants/{base_name}.gatk.vcf.gz".format(base_name=BASE_NAME))
+        #saving phasing info to a tsv file
+        # if ANNOTATE_SCHEME != 'no-annotate':
+        if not NOT_ANNOTATE:
+            PHASING_INFO_TSV = "variants/phasing_info/" + BASE_NAME + ".phasing_info.gatk.tsv"
+            include: include_prefix + 'save_phasing_info_to_tsv.rules'
+            final_outputs.append(PHASING_INFO_TSV)
+    if 'freebayes' in CALLERS:
+        vcf_annotated_outs.append("variants/{base_name}.freebayes.vcf.gz".format(base_name=BASE_NAME))
+        # vcf_annotated_outs.append("variants/{base_name}.freebayes_unfiltered.vcf.gz".format(base_name=BASE_NAME))
+    final_outputs.extend(vcf_annotated_outs)
+    final_outputs.extend(['%s.tbi' % f for f in vcf_annotated_outs])
+
+    # handling standard filteration and gene level annotation
+    # if ANNOTATE_SCHEME == 'no-annotate' or SKIP_SPREADSHEET_CREATE:
+    TIERS_1_TO_5 = 'Tiers_1-5'
+    if NOT_ANNOTATE:
+        pass
+    else:
+        if 'variant_stats' not in SKIPS:
+            #run variant_stats.rules for both gatk and freebayes annotated variants
+            include: include_prefix + 'variant_stats.rules'
+            final_outputs.extend(['variant_stats/variant_numbers.{base_name}.{caller}.txt'.format(
+                                    base_name=BASE_NAME, caller=c) for c in CALLERS ])
+            final_outputs.extend(["variant_stats/TsTv.{base_name}.{caller}.csv".format(
+                                    base_name=BASE_NAME, caller=c) for c in CALLERS ])
+            if DATA_TYPE in [WGS, WES] and 'gatk' in CALLERS:#check sex and homozygosity_rate_each_autosome
+                final_outputs.append("variant_stats/sexes_inferred_with_chrX.{base_name}.tsv".format(base_name=BASE_NAME))
+                final_outputs.append("variant_stats/homozygous_variant_rate_each_autosome.{base_name}.tsv".format(base_name=BASE_NAME))
+
+        if DATA_TYPE in [WGS, WES]:
+            #do filteration
+            include: include_prefix + 'standard_filter.rules'
+            for caller in CALLERS:
+                filtered_vcf = 'variants/{base_name}.{caller}.{filter_type}.vcf.gz'.format(
+                            base_name=BASE_NAME, caller=caller, filter_type=TIERS_1_TO_5)
+                filtered_vcf_idx = filtered_vcf + '.tbi'
+                final_outputs.append(filtered_vcf)
+                final_outputs.append(filtered_vcf_idx)
+        if not NOT_GENE_ANNOTATE:
+            #perform gene annotation and generate spreadsheet files
+            include: include_prefix + 'gene_annotation.rules'
+            if DATA_TYPE in [WGS, WES]:
+                #only do it for the filtered vcf
+                for caller in CALLERS:
+                    spreadsheet = 'variants/{base_name}.{caller}.{filter_type}.{sprd_type}'.format(
+                                base_name=BASE_NAME, caller=caller, sprd_type=SPREADSHEET_FORMAT,
+                                filter_type=TIERS_1_TO_5)
+                    final_outputs.append(spreadsheet)
+            else:
+                #do it for the unfiltered VCF
+                for caller in CALLERS:
+                    spreadsheet = 'variants/{base_name}.{caller}.{sprd_type}'.format(
+                                base_name=BASE_NAME, caller=caller, sprd_type=SPREADSHEET_FORMAT)
+                    final_outputs.append(spreadsheet)
+
+print
+print('\nfinal_outputs:\n%s\n' % final_outputs)
+print
+
+rule all:
+    input: final_outputs
+
+print('final_outputs: %s' % str(final_outputs))
+
+# import ipdb; ipdb.set_trace()
+
+onstart:
+    if creat_chr_bed_onstart:
+        print('\nParsing bed file for preparing paralleling the GATK HC & GT jobs: ', CALL_REGION_BED)
+        chr_to_out_bed_handle = {}
+        with open(CALL_REGION_BED) as in_handle:
+            for line in in_handle:
+                chr_ = line.split('\t')[0]
+                try:
+                    chr_to_out_bed_handle[chr_].write(line)
+                except KeyError:
+                    chr_to_out_bed_handle[chr_] = open(chr_to_gatk_hc_chr_bed[chr_], 'w')
+                    chr_to_out_bed_handle[chr_].write(line)
+        for handle in chr_to_out_bed_handle.values():
+            handle.close()
+        print('Done with parsing bed file.')
+        from time import sleep
+        sleep(5) #latency may happen
+
+onsuccess:
+    #rename and move final BAMs to bams/
+    if not _no_bam_created_by_pipeline:
+        shell('mkdir -p bams')
+        for sm in SAMPLE_NAMES:
+            if SAMPLE_TO_UNITS and len(SAMPLE_TO_UNITS[sm]) > 1:
+                to_sm = sm + '.merged'
+            else:
+                to_sm = sm
+            if R1_ADAPTER is not None:
+                to_sm += '.trimmed'
+            if STEP_DEDUP not in SKIPS:
+                to_sm += '.dedup'
+            if STEP_BQSR not in SKIPS:
+                to_sm += '.bqsr'
+            dest_bam = to_sm + '.bam'
+            if STEP_BQSR not in SKIPS:
+                true_bam_index_exten = '.bai' #picard-style bam index
+            else:
+                true_bam_index_exten = '.bam.bai' #samtools-style bam index
+            dest_idx = to_sm + true_bam_index_exten
+
+            bam_orig_dir = 'bqsr/'
+            orig_bam = bam_orig_dir + sm + '.bam'
+            orig_idx = bam_orig_dir + sm + '.bai' #it is always this extension
+            shell('''mv -f "`readlink -f %s`" bams/%s''' % (orig_bam, dest_bam))
+            shell('''mv -f "`readlink -f %s`" bams/%s''' % (orig_idx, dest_idx))
+    #move gatk_gvcf/ to variants/
+    if not PASSED_GVCFS and STOP_AFTER is None and 'gatk' in CALLERS:
+        shell('mv -f gatk_gvcf/ variants/')
+
+    #remove intermediate files
+    # dirs_to_remove = 'trim_stats caller_out gatk_chr_gvcf bwa_out dedup mapped merged realn bqsr tmp gatk_genotype split_for_annotate .snakemake'
+    if not KEEP_TEMP_FILES:
+        dirs_to_remove = 'trim_stats caller_out gatk_chr_gvcf gatk_chr_genotype bwa_out dedup mapped merged realn bqsr tmp freebayes_tmp gatk_genotype split_for_annotate .snakemake'
+        shell('rm -rf %s' % dirs_to_remove)
+
+    if os.path.exists('logs/'):
+        shell('chmod -fR +r logs')
+    if EMAIL:
+        shell('echo | mail -s "{base_name}: finished pipeline; no error" {email}'.format(
+            base_name=BASE_NAME, email=EMAIL))
+
+onerror:
+    if os.path.exists('logs/'):
+        shell('chmod -fR +r logs')
+    if EMAIL:
+        shell('mail -s "{base_name}: failed with error" {email} < {log}'.format(
+            base_name=BASE_NAME, email=EMAIL, log=log))

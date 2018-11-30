@@ -1,0 +1,102 @@
+"""
+Only non-duplicated aligments with MQ >= 20 contribute to the coverage.
+
+Use this bam files as INPUT:
+        bam = lambda wildcards: SAMPLE_TO_ANALYSIS_READY_BAM[wildcards.sample],
+        idx = lambda wildcards: SAMPLE_TO_ANALYSIS_READY_BAM_INDEX[wildcards.sample]
+"""
+
+depthOfCoverage_mem = 4500 + (T_PER_SM -1) * 1500
+depthOfCoverage_region_param = '-L %s' % DEPTHOFCOVERAGE_BED if DEPTHOFCOVERAGE_BED else \
+        ' '.join(['-L %s' % chr_ for chr_ in ALL_CHRMS])
+region_coverage_mem = 3000 + (T_PER_SM -1) * 1000
+
+rule depthOfCoverage_each_bam:
+    input:
+        bam = lambda wildcards: SAMPLE_TO_ANALYSIS_READY_BAM[wildcards.sample],
+        idx = lambda wildcards: SAMPLE_TO_ANALYSIS_READY_BAM_INDEX[wildcards.sample]
+    output:
+        TMP_DIR + '/{sample}.depthOfCoverage.sample_summary'
+    threads: T_PER_SM
+    resources: thread=T_PER_SM, io=1
+    params:
+        job_name = BASE_NAME + "_{sample}_depthOfCoverage",
+        t = str(T_PER_SM),
+        mem = str(int(depthOfCoverage_mem * 1.024)),
+        vmem = str(depthOfCoverage_mem * 2),
+        walltime = WALLTIME,
+        # GATK's depthOfCoverage adds '.sample_summary' extension to out_prefix
+        out_prefix = TMP_DIR + '/{sample}.depthOfCoverage'
+    shell:
+        '{JAVA8} -Xmx{depthOfCoverage_mem}m -XX:ParallelGCThreads=1 -jar {GATK} '
+        '-T DepthOfCoverage -R {REF} -I {input.bam} -o {params.out_prefix} '
+        '-nt {threads} '
+        '--minMappingQuality 20 '
+        '{depthOfCoverage_region_param} '
+        '--outputFormat csv '
+        '--stop 1000000 '
+        '--omitDepthOutputAtEachBase '
+        '--omitIntervalStatistics '
+        '--omitLocusTable '
+        '--summaryCoverageThreshold 1 '
+        '--summaryCoverageThreshold 5 '
+        '--summaryCoverageThreshold 10 '
+        '--summaryCoverageThreshold 20 '
+        '--summaryCoverageThreshold 40 '
+        '--summaryCoverageThreshold 100 '
+        '--summaryCoverageThreshold 200 '
+        '--summaryCoverageThreshold 400 '
+        '--summaryCoverageThreshold 800 '
+        '--summaryCoverageThreshold 1200 '
+        '--summaryCoverageThreshold 2000 '
+
+rule combine_depthOfCoverage:
+    input:
+        expand(TMP_DIR + '/{sample}.depthOfCoverage.sample_summary', sample=SAMPLE_NAMES)
+    output:
+        'bam_stats/{BASE_NAME}.depthOfCoverage.csv'
+    threads: 1
+    resources: thread=1
+    params:
+        job_name = BASE_NAME + "_combine_depthOfCoverage",
+        t = str(1),
+        mem = str(1500),
+        vmem = str(1500 * 2),
+        walltime = WALLTIME,
+    shell:
+        "{SACGF_ENV_RUNNER} {COMBINE_DEPTH_OF_COVERAGE_SCRIPT} {input} {output}"
+
+rule regional_depth:
+    input:
+        bam = lambda wildcards: SAMPLE_TO_ANALYSIS_READY_BAM[wildcards.sample],
+        idx = lambda wildcards: SAMPLE_TO_ANALYSIS_READY_BAM_INDEX[wildcards.sample]
+    output:
+        TMP_DIR + '/regional_depth.{sample}.tsv'
+    threads: T_PER_SM
+    resources: thread=T_PER_SM, io=1
+    params:
+        job_name = BASE_NAME + "_{sample}_region_coverage",
+        t = str(T_PER_SM),
+        mem = str(int(region_coverage_mem * 1.024)),
+        vmem = str(region_coverage_mem * 2),
+        walltime = WALLTIME,
+    shell:
+        '{SAMBAMBA} depth region -t {threads} -L {DEPTHOFCOVERAGE_BED} '
+        '--filter "mapping_quality >= 20 and not duplicate and not failed_quality_control" '
+        '{input.bam} > {output}'
+
+rule combine_regional_depth:
+    input:
+        expand(TMP_DIR + '/regional_depth.{sample}.tsv', sample=SAMPLE_NAMES)
+    output:
+        'bam_stats/{BASE_NAME}.regional_mean_depth.tsv'
+    threads: 1
+    resources: thread=1
+    params:
+        job_name = BASE_NAME + "_region_coverage",
+        t = str(1),
+        mem = str(4000),
+        vmem = str(4000 * 2),
+        walltime = WALLTIME,
+    shell:
+        "{SACGF_ENV_RUNNER} {COMBINE_REGIONAL_DEPTH_SCRIPT} {DEPTHOFCOVERAGE_BED} {input} {output}"

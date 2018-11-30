@@ -1,0 +1,23 @@
+"""
+works after rule mark_duplicate, to perform BQSR
+"""
+
+rule skip_bqsr:
+    input:
+        bam = "dedup/{sample}.bam",
+        idx = "dedup/{sample}.bam.bai"
+    output:
+        bam="bqsr/{sample}.bam",
+        idx="bqsr/{sample}.bai"
+    priority: 30
+    resources: thread=1
+    params:
+        job_name= BASE_NAME + "_skipBQSR_" + "{sample}",
+        t = str(1),
+        mem = str(500),
+        vmem = str(1000),
+        walltime = WALLTIME,
+    shell:
+        "sleep 3 && "
+        "ln -sf ../{input.bam} {output.bam} "
+        "&& ln -sf ../{input.idx} {output.idx} "

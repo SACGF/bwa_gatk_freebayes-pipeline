@@ -1,0 +1,82 @@
+"""
+run after rule variant_level_annotation
+"""
+
+rule standard_filter:
+    input:
+        vcf='variants/{base_name}.{{caller,(gatk|freebayes)}}.vcf.gz'.format(base_name=BASE_NAME),
+        idx='variants/{base_name}.{{caller,(gatk|freebayes)}}.vcf.gz.tbi'.format(base_name=BASE_NAME)
+    output:
+        vcf = 'variants/{base_name}.{{caller,(gatk|freebayes)}}.{{filter_type}}.vcf.gz'.format(base_name=BASE_NAME),
+        idx = 'variants/{base_name}.{{caller,(gatk|freebayes)}}.{{filter_type}}.vcf.gz.tbi'.format(base_name=BASE_NAME)
+    threads: 1
+    priority: 50
+    resources: thread=1
+    params:
+        job_name = BASE_NAME + "_{caller}_{filter_type}_filter",
+        t = str(1),
+        mem = str(5000),
+        vmem = str(5000 * 2),
+        walltime = WALLTIME,
+    shell:
+        '{SACGF_ENV_RUNNER} {STANDARD_FILTER_SCRIPT} -i {input.vcf} -o {output.vcf} '
+        '--filter {wildcards.filter_type} '
+
+# TODO tuning the mem with the number of samples in the VCF file
+if DATA_TYPE == 'wgs':
+    if SAMPLE_NAMES:
+        if len(SAMPLE_NAMES) <= 4:
+            mem_for_gene_annotate = 24000
+        else:
+            mem_for_gene_annotate = 48000
+    else:
+        mem_for_gene_annotate = 50000
+elif DATA_TYPE == 'wes':
+    if SAMPLE_NAMES:
+        if len(SAMPLE_NAMES) <= 5:
+            mem_for_gene_annotate = 12000
+        elif 5 < len(SAMPLE_NAMES) <= 20:
+            mem_for_gene_annotate = 24000
+        elif 20 < len(SAMPLE_NAMES) <= 50:
+            mem_for_gene_annotate = 36000
+        else:
+            mem_for_gene_annotate = 50000
+    else:
+        mem_for_gene_annotate = 50000
+elif DATA_TYPE == 'panel':
+    mem_for_gene_annotate = 15000
+
+rule gene_annotate_after_stand_filter:
+    input:
+        vcf = rules.standard_filter.output.vcf,
+        idx = rules.standard_filter.output.idx
+    output:
+        'variants/' + BASE_NAME + '.{caller}.{filter_type}.' + SPREADSHEET_FORMAT
+    threads: 1
+    priority: 50
+    resources: thread=1
+    params:
+        job_name = BASE_NAME + "_geneAnnot_for_{caller}_{filter_type}",
+        t = str(1),
+        mem = str(mem_for_gene_annotate),
+        vmem = str(mem_for_gene_annotate * 2),
+        walltime = WALLTIME,
+    run:
+        scheme_param = ''
+        call_specific_annot_param = ''
+        if wildcards.caller == 'freebayes' and DATA_TYPE == 'panel':
+            scheme_param = '--scheme Ion-Proton'
+        elif wildcards.caller == 'freebayes':
+            call_specific_annot_param = '--genotype_fields GT,GQ,DP,AO --add SM-ALT-Percentage'
+        if wildcards.caller == 'gatk' and DATA_TYPE == 'panel':
+            scheme_param = '--scheme no-gene-annotation'
+
+        if not ADD_CHRIS_GENE_LIST:
+            skip_param = '--skip Chris-list'
+        else:
+            skip_param = ''
+        shell(
+            '{SACGF_ENV_RUNNER} {GENE_AND_SAMPLE_LEVEL_ANNOTATIONY_SCRIPT} -i {input.vcf} -o {output} '
+            '--still_save_empty_outfile '
+            '{scheme_param} {call_specific_annot_param} {skip_param}'
+            )

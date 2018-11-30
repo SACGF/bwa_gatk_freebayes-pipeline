@@ -1,0 +1,78 @@
+"""
+input:
+    bam = lambda wildcards: SAMPLE_TO_ANALYSIS_READY_BAM[wildcards.sample],
+    idx = lambda wildcards: SAMPLE_TO_ANALYSIS_READY_BAM_INDEX[wildcards.sample]
+"""
+
+t = T_PER_SM if T_PER_SM <= 16 else 16
+if t <= 4:
+    gc_t = 2 if t >= 2 else 1
+elif t <= 8:
+    gc_t = 4
+elif t <= 12:
+    gc_t = 8
+else:
+    gc_t = 8
+
+#temp fix; will use Snakemake's attemp later
+if DATA_TYPE == WGS:
+    _base_mem_ = 24 * 1000
+else:
+    _base_mem_ = 12 * 1000
+mem_per_t = 9000
+xmx = _base_mem_ + (t-1) * mem_per_t
+mem = int(xmx * 1.024) + 15*1000
+_max_mem_ = 250 * 1000
+mem = _max_mem_ if mem > _max_mem_ else mem
+vmem = mem * 2
+
+java_opts = '-Xms512m -Xmx%sm -XX:MaxPermSize=1024m -XX:ParallelGCThreads=%s' % (xmx, gc_t)
+gff_param = '-gff ' + QUALIMAP_BED if QUALIMAP_BED else ''
+
+rule qualimap_on_each_bam:
+    input:
+        bam = lambda wildcards: SAMPLE_TO_ANALYSIS_READY_BAM[wildcards.sample],
+        idx = lambda wildcards: SAMPLE_TO_ANALYSIS_READY_BAM_INDEX[wildcards.sample]
+    output:
+        outpdf = 'bam_stats/{sample}/{sample}.qualimap.pdf',
+        outtxt = 'bam_stats/{sample}/genome_results.txt'
+    threads: t
+    resources: thread=t, io=1
+    params:
+        job_name = BASE_NAME + "_qualimap_" + '{sample}',
+        t = str(t),
+        mem = str(mem),
+        vmem = str(vmem),
+        walltime = WALLTIME,
+        outdir = 'bam_stats/{sample}/',
+        outfile = '{sample}.qualimap.pdf'
+    run:
+        shell(
+            'module load java/java-jdk-1.7.0_80 ; '
+            'module load R/3.4.0 ; '
+            'unset DISPLAY ; '
+            'export JAVA_OPTS="{java_opts}"; '
+            '{QUALIMAP} bamqc -bam {input.bam} {gff_param} '
+            '-outformat PDF -outdir {params.outdir} -outfile {params.outfile} '
+            '--genome-gc-distr {SPECIES} '
+            '--collect-overlap-pairs '
+            '-nt {threads} -nr 20000 '
+            '--paint-chromosome-limits '
+            '--outside-stats '
+            )
+
+rule combine_qualimap_results:
+    input:
+        expand('bam_stats/{sample}/genome_results.txt', sample=SAMPLE_NAMES)
+    output:
+        'bam_stats/{BASE_NAME}.qualimap.tsv'
+    threads: 1
+    resources: thread=1
+    params:
+        job_name = BASE_NAME + "_combine_qualimap",
+        t = str(1),
+        mem = str(2500),
+        vmem = str(1500 * 2),
+        walltime = WALLTIME,
+    shell:
+        "sleep 15; {SACGF_ENV_RUNNER} {COMBINE_QUALIMAP_SCRIPT} {input} {output}"

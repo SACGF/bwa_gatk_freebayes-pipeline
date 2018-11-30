@@ -1,0 +1,77 @@
+"""
+run after GATK/Freebayes' caller filteration
+"""
+
+#output from GATK/Freebayes' caller filteration
+#vcf="gatk_filtered/{base_name}.vcf.gz",
+#idx="gatk_filtered/{base_name}.vcf.gz.tbi"
+#vcf="freebayes_filtered/{base_name}.vcf.gz",
+#idx="freebayes_filtered/{base_name}.vcf.gz.tbi"
+
+#DATA_TYPE
+#ANNOTATE_SCHEME: cancer, non-cancer, cancer-and-no-gene-annotate, non-cancer-and-no-gene-annotate, no-annotate
+#--skip-chris-gene-list
+#--skip-spreadsheet-create
+#--spreadsheet-format tsv or xlsx. Default is xlsx.
+
+rule variant_level_annot:
+    input:
+        vcf='{caller}_filtered/' + BASE_NAME + '.vcf.gz',
+        idx='{caller}_filtered/' + BASE_NAME + '.vcf.gz.tbi'
+    output:
+        vcf='variants/' + BASE_NAME + '.{caller}.vcf.gz',
+        idx='variants/' + BASE_NAME + '.{caller}.vcf.gz.tbi'
+    threads: 1
+    params:
+        job_name = BASE_NAME + "_VarAnnotate",
+        t = str(1),
+        mem = str(4500),
+        vmem = str(4500 * 2),
+        walltime = WALLTIME,
+        email = EMAIL
+    run:
+        if ANNOTATE_SCHEME in ['cancer', 'cancer-and-no-gene-annotate']:
+            annot_params = ''
+        elif ANNOTATE_SCHEME in ['non-cancer', 'non-cancer-and-no-gene-annotate']:
+            annot_params = '--skip COSMIC-snpEFF --skip COSMIC --skip TGI-tier'
+        elif ANNOTATE_SCHEME == 'no-annotate':
+            annot_params = '--add dbSNP-ID'
+        shell(
+            '{SACGF_ENV_RUNNER} {VARIANT_LEVEL_ANNOTATE_SCRIPT} -i {input.vcf} -o {output.vcf} '
+            '{annot_params} '
+            )
+
+#Implement the last section of workflow.snake
+    # three possibilities after finish variant_level_annot:
+        # do nothing; simply using the output of variant_level_annot as the final outputs
+        # filter_n_add_gene_annotation
+        # create spreadsheet directly based on one created by variant_level_annot
+if ANNOTATE_SCHEME == 'no-annotate' or SKIP_SPREADSHEET_CREATE:
+    pass
+elif ANNOTATE_SCHEME in ['cancer', 'non-cancer'] and not SKIP_SPREADSHEET_CREATE:
+    rule filter_on_base_vcf:
+    rule add_gene_annotate_to_spreadsheet_after_filter:
+
+    for caller in CALLERS:
+        if ANNOTATE_SCHEME == 'cancer':
+            if caller == 'gatk':
+                filter_types = ['basic', 'cancer_basic', 'fruit']
+            elif caller == 'freebayes': 
+                filter_types = ['basic', 'cancer_basic']
+        elif ANNOTATE_SCHEME == 'non-cancer':
+            if caller == 'gatk':
+                filter_types = ['basic', 'fruit']
+            elif caller == 'freebayes': 
+                filter_types = ['basic']
+        filtered_vcfs = ['variants/{base_name}.{caller}.{filter_type}.vcf.gz'.format(
+                    base_name=BASE_NAME, caller=caller, filter_type=ft) for ft in filter_types])
+        filtered_vcf_idx = [vcf + '.tbi' for vcf in filtered_vcfs]
+        spreadsheets = ['variants/{base_name}.{caller}.{filter_type}.{sprd_type}'.format(
+                    base_name=BASE_NAME, caller=caller, sprd_type=SPREADSHEET_FORMAT, filter_type=ft) 
+                    for ft in filter_types]
+        for alist in [filtered_vcfs, filtered_vcf_idx, spreadsheets]:
+            final_outputs.extend(alist)
+elif ANNOTATE_SCHEME in ['cancer-and-no-gene-annotate', 'non-cancer-and-no-gene-annotate']
+    and not SKIP_SPREADSHEET_CREATE:
+    final_outputs.expend(['variants/{base_name}.{caller}.{sprd_type}'.format(
+                base_name=BASE_NAME, sprd_type=SPREADSHEET_FORMAT, caller=c) for c in CALLERS ])

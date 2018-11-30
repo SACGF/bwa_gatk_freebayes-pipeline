@@ -1,0 +1,21 @@
+rule mapping:
+    """
+    Output is a dedup and sorted BAM with index file;
+    Input are one single or a pair of FASTQ files.
+    """
+    input:
+        lambda wildcards: config["units"][wildcards.unit]
+    output:
+        "mapping/units/{unit}.bam"
+    threads: config['bwa_threads']
+    params:
+        read_group=lambda wildcards: config["read_groups"][wildcards.unit],
+        job_name=lambda wildcards: "map_" + config["unit_names"][wildcards.unit],
+    shell:
+        '''
+        {BWA} mem -t {threads} -R "{params.read_group}" \\
+        {REF} {input} \\
+        | {SAMBLASTER} \\
+        | {SAMBAMBA} view --sam-input --format=bam --compression-level 0 /dev/stdin \\
+        | {SAMBAMBA} sort -t {threads} -o {output} /dev/stdin
+        '''

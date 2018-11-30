@@ -1,0 +1,21 @@
+rule sample_merge:
+    """
+    Merge bam files for multiple units into one for the given sample.
+    If the sample has only one unit, a symlink will be created.
+    Uses {config[sambamba_sort_t]}
+    """
+    input:
+        lambda wildcards: expand(
+            "mapping/units/{unit}.bam",
+            unit=config["samples"][wildcards.sample])
+    output:
+            "mapping/samples/{sample}.bam"
+    threads: config['sambamba_threads']
+    params:
+        job_name=lambda wildcards: "bam-merge_" + config["sample_names"][wildcards.sample],
+    run:
+        if len(input) > 1:
+            shell("{SAMBAMBA} merge -t {config[sambamba_sort_t]} {output} {input}")
+        else:
+            # relative path ../../ is needed to make the symbol link work correctly
+            shell("ln -s ../../{input} {output} && touch -h {output}")

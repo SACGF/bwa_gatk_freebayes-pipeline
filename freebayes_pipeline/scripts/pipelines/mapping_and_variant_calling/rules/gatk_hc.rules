@@ -1,0 +1,65 @@
+"""
+to run GATK HaplotypeCaller to create gVCF file
+run after rule gatk_bqsr or skip_bqsr
+"""
+import os
+
+#always use t=1, because using 2 is only faster than 1 by 10%
+t = 1
+hc_mem=5500
+mem = str(int(hc_mem * 1.024))
+vmem = str(hc_mem * 2)
+
+rule gatk_hc_for_separate_chr:
+    input:
+        bam = lambda wildcards: SAMPLE_TO_ANALYSIS_READY_BAM[wildcards.sample],
+        idx = lambda wildcards: SAMPLE_TO_ANALYSIS_READY_BAM_INDEX[wildcards.sample],
+        bed = CALL_REGION_BED
+    output:
+        # gvcf = temp('gatk_chr_gvcf/{sample}.chr{chr_}.g.vcf.gz'),
+        # idx = temp('gatk_chr_gvcf/{sample}.chr{chr_}.g.vcf.gz.tbi')
+        gvcf = 'gatk_chr_gvcf/{sample}.chr{chr_}.g.vcf.gz',
+        idx = 'gatk_chr_gvcf/{sample}.chr{chr_}.g.vcf.gz.tbi'
+    threads: t
+    resources: thread=t
+    priority: 50
+    params:
+        job_name = BASE_NAME + "-HC-" + "{sample}-" + "chr{chr_}",
+        t = str(t),
+        mem = mem,
+        vmem = vmem,
+        walltime = WALLTIME
+    run:
+        chr_bed = chr_to_gatk_hc_chr_bed[wildcards.chr_]
+        shell(
+        '{JAVA8} -Xmx{hc_mem}m -XX:ParallelGCThreads=1 -jar {GATK} '
+        '-T HaplotypeCaller -R {REF} -I {input.bam} -o {output.gvcf} '
+        '--emitRefConfidence GVCF '
+        '-newQual '
+        '-nct {threads} '
+        '-L {chr_bed} '
+        '{config[gatk_hc_param]} ' #default gatk_hc_param is empty string
+        )
+
+rule combine_chr_gvcfs:
+    #TODO: handle the case where there is only one chr-bed file
+    input:
+        chr_gvcfs = ["gatk_chr_gvcf/{{sample}}.chr{chr_}.g.vcf.gz".format(chr_=chr_) for chr_ 
+                in sorted_chrs],
+        idx = ["gatk_chr_gvcf/{{sample}}.chr{chr_}.g.vcf.gz.tbi".format(chr_=chr_) for chr_ 
+                in sorted_chrs]
+    output:
+        gvcf="gatk_gvcf/{sample}.g.vcf.gz",
+        idx="gatk_gvcf/{sample}.g.vcf.gz.tbi"
+    threads: 1
+    resources: thread=1
+    priority: 50
+    params:
+        job_name = BASE_NAME + "-combine-chr-gvcfs-" + "{sample}",
+        t = str(1),
+        mem = '3000',
+        vmem = '6000',
+        walltime = WALLTIME,
+    shell:
+        '{BCFTOOLS} concat -O z {input.chr_gvcfs} > {output.gvcf} ; '
+        '{BCFTOOLS} index -t {output.gvcf}'

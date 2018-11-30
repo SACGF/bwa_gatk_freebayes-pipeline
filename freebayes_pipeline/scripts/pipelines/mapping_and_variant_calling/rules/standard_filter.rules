@@ -1,0 +1,27 @@
+"""
+Perform 'Tiers_1-5' filteration
+Input is the annotated VCF of gatk and/or freebayes
+"""
+
+rule standard_filter:
+    input:
+        vcf='variants/{base_name}.{{caller}}.vcf.gz'.format(base_name=BASE_NAME),
+        idx='variants/{base_name}.{{caller}}.vcf.gz.tbi'.format(base_name=BASE_NAME)
+    output:
+        vcf = 'variants/{base_name}.{{caller,(gatk|freebayes)}}.{filter_type}.vcf.gz'.format(
+                base_name=BASE_NAME, filter_type=TIERS_1_TO_5),
+        idx = 'variants/{base_name}.{{caller,(gatk|freebayes)}}.{filter_type}.vcf.gz.tbi'.format(
+                base_name=BASE_NAME, filter_type=TIERS_1_TO_5)
+    threads: 1
+    priority: 50
+    resources: thread=1
+    params:
+        job_name = BASE_NAME + "_standard_filter_{caller}",
+        t = str(1),
+        mem = str(3000),
+        vmem = str(3000 * 2),
+        walltime = WALLTIME,
+    shell:
+        '{BCFTOOLS} view -O z -i "Tier <= 5" {input.vcf} > {output.vcf} && '
+        '{BCFTOOLS} index -t {output.vcf} '
+

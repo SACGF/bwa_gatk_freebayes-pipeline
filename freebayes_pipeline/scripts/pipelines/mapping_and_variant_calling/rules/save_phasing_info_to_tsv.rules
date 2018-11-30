@@ -1,0 +1,60 @@
+"""
+Run after GATK's vcf is annotated.
+"""
+import gzip
+
+java_mem = 5000
+mem = str(int(java_mem * 1.024))
+vmem = str(java_mem * 2)
+
+def count_header_lines(gz_vcf):
+    count = 0
+    inhandle = gzip.open(gz_vcf, 'rt')
+    for line in inhandle:
+        if line.startswith('#'):
+            count += 1
+        else:
+            break
+    return count
+
+rule save_phasing_info_to_tsv:
+    input:
+        vcf='variants/{base_name}.gatk.vcf.gz'.format(base_name=BASE_NAME),
+        idx='variants/{base_name}.gatk.vcf.gz.tbi'.format(base_name=BASE_NAME)
+    output:
+        PHASING_INFO_TSV
+    threads: 1
+    priority: 20
+    resources: thread=1
+    params:
+        job_name = BASE_NAME + "-Extract_Phasing_Info",
+        t = str(1),
+        mem = mem,
+        vmem = vmem,
+        walltime = WALLTIME,
+    run:
+        num_header = count_header_lines(input.vcf)
+        tmp_vcf = TMP_DIR + '/phasing_info.tmp.vcf'
+        shell(
+            'set +o pipefail; ' # With "zcat | head", zcat will return non-zero code because it is terminated before outputing all lines
+            'zcat {input.vcf} | head -n {num_header} >  {tmp_vcf} ; '
+            'zcat {input.vcf} | grep -P "\\tPASS\\t" | grep :PGT:PID >> {tmp_vcf} ; '
+            '{JAVA8} -Xmx{java_mem}m -XX:ParallelGCThreads=1 -jar {GATK} '
+            '-T VariantsToTable -R {REF} '
+            '--variant {tmp_vcf} '
+            '-o {output} '
+            '--showFiltered '
+            '-F HGNC_SNPEFF '
+            '-F CHROM '
+            '-F POS '
+            '-F ID '
+            '-F IMPACT_SNPEFF '
+            '-F 1KG_AF '
+            '-F TYPE '
+            '-F REF '
+            '-F ALT '
+            '-GF PID '
+            '-GF PGT '
+            '-GF GT '
+            '-GF GQ '
+            )

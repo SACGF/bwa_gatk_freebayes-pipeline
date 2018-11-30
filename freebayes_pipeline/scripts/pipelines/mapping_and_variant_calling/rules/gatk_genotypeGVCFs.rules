@@ -1,0 +1,82 @@
+"""
+"""
+
+gt_mem = T_MAX * 5000
+gt_mem = 10 * 5000 if gt_mem < (10 * 5000) and PERFORM_EXTRA_JOINT_GT else gt_mem
+
+mem = str(int(gt_mem * 1.024))
+vmem = str(gt_mem * 2)
+
+def _gatk_multi_arg(flag, files):
+    flag += " "
+    return " ".join(flag + f for f in files)
+
+#genotying on each chr and then combine
+# construct chr_to_gvcfs
+# sorted_chrs and chr_to_gatk_hc_chr_bed[wildcards.chr_] and PERFORM_EXTRA_JOINT_GT
+chr_to_gvcfs = {}
+for chr_ in sorted_chrs:
+    chr_to_gvcfs[chr_] = \
+            ['gatk_chr_gvcf/{sample}.chr{chr_}.g.vcf.gz'.format(
+                sample=sm, chr_=chr_) for sm in SAMPLE_NAMES]
+if PERFORM_EXTRA_JOINT_GT:
+    for chr_ in sorted_chrs:
+        chr_to_gvcfs[chr_] = chr_to_gvcfs[chr_] + \
+                [config['extra_gvcf_dir'] + '/%s.g.vcf.gz' % chr_]
+chr_to_gvcf_indexes = {}
+for chr_, gvcfs in chr_to_gvcfs.items():
+    indexes = [g + '.tbi' for g in gvcfs]
+    chr_to_gvcf_indexes[chr_] = indexes
+
+_gt_threads = 1 #fix value
+gt_mem = _gt_threads * 6000
+mem = int(gt_mem * 1.024)
+vmem = gt_mem * 2
+
+rule gatk_each_chr_genotypeGVCFs:
+    input:
+        gvcfs = lambda wildcards: chr_to_gvcfs[wildcards.chr_],
+        indexes = lambda wildcards: chr_to_gvcf_indexes[wildcards.chr_]
+    output:
+        vcf="gatk_chr_genotype/" + BASE_NAME + ".chr{chr_}.vcf.gz",
+        idx="gatk_chr_genotype/" + BASE_NAME + ".chr{chr_}.vcf.gz.tbi"
+    threads: _gt_threads
+    priority: 50
+    resources: thread=_gt_threads
+    params:
+        job_name = BASE_NAME + "-GATK-GT-chr{chr_}",
+        custom=config["gatk_gtGVCF_param"],
+        t = _gt_threads,
+        mem = mem,
+        vmem = vmem,
+        walltime = WALLTIME,
+    run:
+        gvcfs = _gatk_multi_arg("-V", input.gvcfs)
+        shell(
+            '{JAVA8} -Xmx{gt_mem}m -XX:ParallelGCThreads=1 -jar {GATK} '
+            '-T GenotypeGVCFs -R {REF} -o {output.vcf} '
+            '{gvcfs} '
+            '{params.custom} '
+            '-newQual ' )
+
+rule combine_chr_gt_vcf:
+    input:
+        chr_vcfs = ["gatk_chr_genotype/{basename}.chr{chr_}.vcf.gz".format(
+                                    basename=BASE_NAME, chr_=chr_) for chr_ in sorted_chrs],
+        chr_vcfs_idx = ["gatk_chr_genotype/{basename}.chr{chr_}.vcf.gz.tbi".format(
+                                    basename=BASE_NAME, chr_=chr_) for chr_ in sorted_chrs]
+    output:
+        vcf="gatk_genotype/" + BASE_NAME + ".vcf.gz",
+        idx="gatk_genotype/" + BASE_NAME + ".vcf.gz.tbi"
+    threads: 1
+    resources: thread=1
+    priority: 50
+    params:
+        job_name = BASE_NAME + "-combine-chr-gt-vcfs",
+        t = str(1),
+        mem = '4000',
+        vmem = '7000',
+        walltime = WALLTIME,
+    shell:
+        '{BCFTOOLS} concat -O z {input.chr_vcfs} > {output.vcf} ; '
+        '{BCFTOOLS} index -t {output.vcf}'

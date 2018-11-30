@@ -1,0 +1,26 @@
+configfile: '/home/users/jfeng/bioinformatics/scripts/pipelines/mapping_and_variant_calling/templates/config.json'
+workdir: '/home/users/jfeng/test_pipeline/varCall_test/'
+
+REF = config["ref"]
+BWA = config["bwa"]
+SAMBLASTER = config["samblaster"]
+SAMBAMBA = config["sambamba"]
+
+rule all:
+    input:
+        expand("mapping/units/{unit}.bam", unit=config["units"])
+
+rule mapping:
+    input:
+        lambda wildcards: config["units"][wildcards.unit]
+    output:
+        "mapping/units/{unit}.bam"
+    threads: 2
+    shell:
+        '''
+        {BWA} mem -t {threads} -R "{config['read_groups'][wildcards.unit]}" \\
+        {REF} {input} \\
+        | {SAMBLASTER} \\
+        | {SAMBAMBA} view --sam-input --format=bam --compression-level 0 /dev/stdin \\
+        | {SAMBAMBA} sort -t {threads} -o {output} /dev/stdin'
+        '''

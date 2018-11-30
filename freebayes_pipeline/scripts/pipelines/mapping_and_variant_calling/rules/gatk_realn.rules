@@ -1,0 +1,55 @@
+"""
+works after rule mark_duplicate, to perform indel realignment
+"""
+
+realn_target_mem = 5000 + (T_PER_SM -1) * 4000
+
+rule gatk_realign_target:
+    input:
+        bam = "dedup/{sample}.bam",
+        idx = "dedup/{sample}.bam.bai"
+    output:
+        temp("realn/{sample}.realn.intervals")
+    threads: T_PER_SM
+    priority: 30
+    resources: thread=T_PER_SM
+    params:
+        job_name= BASE_NAME + "_realnTarget_" + "{sample}",
+        t = str(T_PER_SM),
+        mem = str(int(realn_target_mem * 1.024)),
+        vmem = str(realn_target_mem * 2),
+        walltime = WALLTIME,
+    shell:
+        'java -Xmx{realn_target_mem}m -XX:ParallelGCThreads=1 -jar {GATK} '
+        '-T RealignerTargetCreator -R {REF} -I {input.bam} -o {output} '
+        '-nt {threads} '
+        '-known {config[mills_indels]} '
+        '-known {config[g1k_indels]} '
+        '{GATK_REGION_PARAM} '
+        '{GATK_KEY_PARAM} '
+
+
+rule gatk_realign_bam:
+    input:
+        bam="dedup/{sample}.bam",
+        realn_intervals="realn/{sample}.realn.intervals"
+    output:
+        bam="realn/{sample}.bam",
+        idx="realn/{sample}.bai" # picard-style index?
+    threads: 1 # no -nt or -nct option available for IndelRealigner
+    priority: 30
+    resources: thread=1, io=1
+    params:
+        job_name= BASE_NAME + "_realign_" + "{sample}",
+        t = str(1),
+        mem = str(5124),
+        vmem = str(5000 * 2),
+        walltime = WALLTIME,
+    shell:
+        'java -Xmx5000m -XX:ParallelGCThreads=1 -jar {GATK} '
+        '-T IndelRealigner -R {REF} -I {input.bam} -o {output.bam} '
+        '-known {config[mills_indels]} '
+        '-known {config[g1k_indels]} '
+        '-targetIntervals {input.realn_intervals} '
+        '{GATK_KEY_PARAM} && '
+        '{REMOVE_AN_INTERMEDIATE_FILE_SCRIPT} {input.bam}'

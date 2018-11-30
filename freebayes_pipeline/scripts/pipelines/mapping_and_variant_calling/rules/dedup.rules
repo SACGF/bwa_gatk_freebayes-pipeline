@@ -1,0 +1,31 @@
+dedup_mem = 6000 + (T_PER_SM -1) * 3000
+
+rule mark_duplicate:
+    """
+    optional to skip by creating symbol links
+    """
+    input:
+        bam = "mapped/{sample}.bam",
+        idx = "mapped/{sample}.bam.bai"
+    output:
+        bam = "dedup/{sample}.bam",
+        idx = "dedup/{sample}.bam.bai"
+    threads: T_PER_SM
+    priority: 30
+    resources: thread=T_PER_SM, io=1
+    params:
+        job_name = BASE_NAME + "_dedup_" + "{sample}",
+        t = str(T_PER_SM),
+        mem = str(dedup_mem),
+        vmem = str(dedup_mem * 2),
+        walltime = WALLTIME,
+    run:
+        if STEP_DEDUP in SKIPS:
+            shell("sleep 3 && "
+                    "ln -sf ../{input.bam} {output.bam} && "
+                    "ln -sf ../{input.idx} {output.idx} ")
+        else:
+            dedup_tmp_dir = '%s/%s/' % (TMP_DIR, wildcards.sample)
+            shell('{SAMBAMBA} markdup -t {threads} --tmpdir {dedup_tmp_dir} '
+                    '--hash-table-size 1048576 --overflow-list-size 1000000 --io-buffer-size 512 '
+                    '{input.bam} {output.bam} ')

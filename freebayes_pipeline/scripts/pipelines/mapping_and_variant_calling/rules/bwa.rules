@@ -1,0 +1,128 @@
+max_sambamba_view_t = 2
+max_sambamba_sort_t = 10
+max_sambamba_sort_mem = 1024 * 5
+
+if T_PER_SM == 1:
+    sambamba_view_t = sambamba_sort_t = 1
+    job_mem = 7000
+    sambamba_sort_mem = 512
+else:
+    sambamba_view_t = max_sambamba_view_t if T_PER_SM > 12 else 1
+    if 4 >= T_PER_SM > 1:
+        sambamba_sort_t = T_PER_SM
+        job_mem = 7000 + (T_PER_SM - 1) * 3000 #max 16000
+        sambamba_sort_mem = 512 + (T_PER_SM - 1) * 256 #max 1280
+        if R1_ADAPTER is not None: #trimming adapter for paired-fastq files
+            job_mem += 1000
+    elif 8 >= T_PER_SM > 4:
+        sambamba_sort_t = 4 + int((T_PER_SM - 4) / 2.)
+        job_mem = 16000 + (T_PER_SM - 4) * 1000 #max 20000
+        sambamba_sort_mem = 1280 + (T_PER_SM - 4) * 128 # max 1792
+        if R1_ADAPTER is not None: #trimming adapter for paired-fastq files
+            job_mem += 2000
+    else:
+        sambamba_sort_t = max_sambamba_sort_t if T_PER_SM > max_sambamba_sort_t else T_PER_SM
+        sambamba_sort_mem = max_sambamba_sort_mem if T_PER_SM > max_sambamba_sort_t \
+                else (1792 + (T_PER_SM - 8) * 128)
+        job_mem = 20000 + (T_PER_SM - 8) * 800
+        if R1_ADAPTER is not None: #trimming adapter for paired-fastq files
+            job_mem += 4000
+
+if DATA_TYPE == Amplicon:
+    rule mapping:
+        """
+        Output is a sorted BAM with index file;
+        Input are one single or a pair of FASTQ files.
+        """
+        input:
+            lambda wildcards: config["units"][wildcards.unit]
+        output:
+            bam='bwa_out/{unit}.bam',
+            idx='bwa_out/{unit}.bam.bai',
+            stat_out='trim_stats/{unit}.txt'
+        threads: T_PER_SM
+        priority: 30
+        resources: thread=T_PER_SM
+        params:
+            read_group=lambda wildcards: config["read_groups"][wildcards.unit],
+            job_name=lambda wildcards: BASE_NAME + "_bwa_trim_" + wildcards.unit,
+            t = str(T_PER_SM),
+            mem = str(job_mem),
+            vmem = str(job_mem * 2),
+            walltime = WALLTIME,
+        shell:
+            '''
+            {BWA} mem -t {threads} -R '{params.read_group}' {REF} {input} \\
+            | {SACGF_ENV_RUNNER} {TRIM_AMP_SAM_SCRIPT} -a {AMP_REGIONS_BED} -i {AMP_INSERTS_BED} -s {output.stat_out} \\
+            | {SAMBAMBA} view -t {sambamba_view_t} --sam-input --format=bam --compression-level 0 /dev/stdin \\
+            | {SAMBAMBA} sort -t {sambamba_sort_t} --tmpdir {TMP_DIR} --memory-limit {sambamba_sort_mem}M -o {output.bam} /dev/stdin
+            '''
+
+    _all_units = set()
+    for units in SAMPLE_TO_UNITS.values():
+        _all_units.update(units)
+    _all_units = list(_all_units)
+
+    #tes# t
+    # print('Maping for Amplicon')
+
+    rule combine_trim_stat_files:
+        input:
+            ['trim_stats/%s.txt' % unit for unit in _all_units]
+        output:
+            'bam_stats/{BASE_NAME}.trim_stats.tsv'
+        threads: 1
+        resources: thread=1
+        params:
+            job_name=BASE_NAME + "_combine_trim_stats",
+            t = str(1),
+            mem = str(2500),
+            vmem = str(2500 * 2),
+            walltime = WALLTIME,
+        shell:
+            '{SACGF_ENV_RUNNER} {TRIM_AMP_SAM_SCRIPT} --combine-stat-files {input} > {output}'
+
+else: #Not amplicon data
+    cutadapt_cores = 1
+    if R1_ADAPTER is not None:
+        cutadapt_cores = 1 if int(T_PER_SM/3) == 0 else int(T_PER_SM/3)
+
+    rule mapping:
+        """
+        Output is a sorted BAM with index file;
+        Input are one single or a pair of FASTQ files.
+        """
+        input:
+            lambda wildcards: config["units"][wildcards.unit]
+        output:
+            bam='bwa_out/{unit}.bam',
+            idx='bwa_out/{unit}.bam.bai'
+        threads: T_PER_SM
+        priority: 30
+        resources: thread=T_PER_SM
+        params:
+            read_group=lambda wildcards: config["read_groups"][wildcards.unit],
+            job_name=lambda wildcards: BASE_NAME + "_bwa_" + wildcards.unit,
+            t = str(T_PER_SM),
+            mem = str(job_mem),
+            vmem = str(job_mem * 2),
+            walltime = WALLTIME
+        run:
+            if R1_ADAPTER is not None: #trimming adapter for paired-fastq files
+                shell('''
+                {CUTADAPT} --interleaved {input} \\
+                | {CUTADAPT} --minimum-length 30 --error-rate 0.2 --overlap 5 --cores {cutadapt_cores} \\
+                    --interleaved -a {R1_ADAPTER} -A {R2_ADAPTER} - \\
+                | {BWA} mem -t {threads} -R '{params.read_group}' -p {REF} - \\
+                | {SAMBAMBA} view -t {sambamba_view_t} --sam-input --format=bam --compression-level 0 /dev/stdin \\
+                | {SAMBAMBA} sort -t {sambamba_sort_t} --tmpdir {TMP_DIR} --memory-limit {sambamba_sort_mem}M -o {output.bam} /dev/stdin
+                    '''
+                    )
+            else:
+                shell('''
+                {BWA} mem -t {threads} -R '{params.read_group}' {REF} {input} \\
+                | {SAMBAMBA} view -t {sambamba_view_t} --sam-input --format=bam --compression-level 0 /dev/stdin \\
+                | {SAMBAMBA} sort -t {sambamba_sort_t} --tmpdir {TMP_DIR} --memory-limit {sambamba_sort_mem}M -o {output.bam} /dev/stdin
+                    '''
+                    )
+

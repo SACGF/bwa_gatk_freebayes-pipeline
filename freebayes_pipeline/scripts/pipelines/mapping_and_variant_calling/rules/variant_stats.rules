@@ -1,0 +1,135 @@
+"""
+run after variant level annotation
+for both gatk and freebayes annotated variants
+"""
+#TODO count the number of functional and rare varaints??
+
+rule count_all_variants:
+    input:
+        vcf='variants/' + BASE_NAME + '.{caller,(gatk|freebayes)}.vcf.gz',
+        idx='variants/' + BASE_NAME + '.{caller,(gatk|freebayes)}.vcf.gz.tbi'
+    output:
+        temp("variant_stats/{caller,(gatk|freebayes)}_total_number.txt")
+    threads: 1
+    resources: thread=1
+    params:
+        job_name = BASE_NAME + "_count_all_variants",
+        t = str(1),
+        mem = str(1500),
+        vmem = str(1500),
+        walltime = WALLTIME,
+    shell:
+        'echo "Number of all variants:" > {output} && '
+        '{BCFTOOLS} view -H {input.vcf} | wc -l >> {output} &&'
+        'echo "" >> {output} '
+
+rule count_pass_variants:
+    input:
+        vcf='variants/' + BASE_NAME + '.{caller,(gatk|freebayes)}.vcf.gz',
+        idx='variants/' + BASE_NAME + '.{caller,(gatk|freebayes)}.vcf.gz.tbi'
+    output:
+        temp("variant_stats/{caller,(gatk|freebayes)}_pass_number.txt")
+    threads: 1
+    resources: thread=1
+    params:
+        job_name = BASE_NAME + "_count_pass_variants",
+        t = str(1),
+        mem = str(1500),
+        vmem = str(1500),
+        walltime = WALLTIME,
+    shell:
+        'echo "Number of variants with PASS:" > {output} && '
+        '{BCFTOOLS} view -H -f PASS {input.vcf} | wc -l >> {output} && '
+        'echo "" >> {output} '
+
+#TODO count the percentage of novel variants
+rule count_novel_variants:
+    input:
+        vcf='variants/' + BASE_NAME + '.{caller,(gatk|freebayes)}.vcf.gz',
+        idx='variants/' + BASE_NAME + '.{caller,(gatk|freebayes)}.vcf.gz.tbi'
+    output:
+        temp("variant_stats/{caller,(gatk|freebayes)}_novel_number.txt")
+    threads: 1
+    resources: thread=1
+    params:
+        job_name = BASE_NAME + "_count_novel_variants",
+        t = str(1),
+        mem = str(1500),
+        vmem = str(1500),
+        walltime = WALLTIME,
+    shell:
+        'echo "Number of variants not in dbSNP:" > {output} && '
+        '{BCFTOOLS} view -H --novel {input.vcf} | wc -l >> {output} && '
+        'echo "" >> {output} '
+
+rule combine_counting_results:
+    input:
+        "variant_stats/{caller,(gatk|freebayes)}_total_number.txt",
+        "variant_stats/{caller,(gatk|freebayes)}_pass_number.txt",
+        "variant_stats/{caller,(gatk|freebayes)}_novel_number.txt"
+    output:
+        "variant_stats/variant_numbers." + BASE_NAME + ".{caller,(gatk|freebayes)}.txt"
+    threads: 1
+    resources: thread=1
+    params:
+        job_name = BASE_NAME + "_combine_counting_results",
+        t = str(1),
+        mem = str(1500),
+        vmem = str(1500),
+        walltime = WALLTIME,
+    shell:
+        'cat {input} > {output}'
+
+rule snpsift_tstv:
+    input:
+        vcf='variants/' + BASE_NAME + '.{caller,(gatk|freebayes)}.vcf.gz',
+        idx='variants/' + BASE_NAME + '.{caller,(gatk|freebayes)}.vcf.gz.tbi'
+    output:
+        "variant_stats/TsTv." + BASE_NAME + ".{caller,(gatk|freebayes)}.csv"
+    threads: 1
+    resources: thread=1
+    params:
+        job_name = BASE_NAME + "_TsTv",
+        t = str(1),
+        mem = str(2500),
+        vmem = str(2500*2),
+        walltime = WALLTIME,
+    shell:
+        '{BCFTOOLS} view {input.vcf} | '
+        'java -Xmx2400m -XX:ParallelGCThreads=1 -jar {SNPSIFT} tstv - > {output}'
+
+
+rule check_sex:
+    input:
+        vcf='variants/' + BASE_NAME + '.gatk.vcf.gz',
+        idx= 'variants/' + BASE_NAME + '.gatk.vcf.gz.tbi'
+    output:
+        "variant_stats/sexes_inferred_with_chrX.{base_name}.tsv".format(base_name=BASE_NAME)
+    threads: 1
+    resources: thread=1
+    params:
+        job_name = BASE_NAME + "_checkSEX",
+        t = str(1),
+        mem = str(2500),
+        vmem = str(2500*2),
+        walltime = WALLTIME,
+    shell:
+        '{SACGF_ENV_RUNNER} {SEX_PREDICTION_SCRIPT} {input.vcf} {output}'
+
+
+rule calculate_homozygosity_rate_each_autosome:
+    input:
+        vcf='variants/' + BASE_NAME + '.gatk.vcf.gz',
+        idx= 'variants/' + BASE_NAME + '.gatk.vcf.gz.tbi'
+    output:
+        "variant_stats/homozygous_variant_rate_each_autosome.{base_name}.tsv".format(base_name=BASE_NAME)
+    threads: 1
+    resources: thread=1
+    params:
+        job_name = BASE_NAME + "_homozygous_variant_rate",
+        t = str(1),
+        mem = str(2500),
+        vmem = str(2500*2),
+        walltime = WALLTIME,
+    shell:
+        '{SACGF_ENV_RUNNER} {CALC_HOMOZYGOUS_VARIANT_RATE_SCRIPT} {input.vcf} {output}'

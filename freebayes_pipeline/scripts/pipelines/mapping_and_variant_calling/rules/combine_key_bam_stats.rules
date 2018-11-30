@@ -1,0 +1,17 @@
+rule combine_key_bam_stats:
+    input:
+        INPUTS_FOR_KEY_BAM_STATS
+    output:
+        'bam_stats/{base_name}.key_bam_stats.tsv'.format(base_name=BASE_NAME)
+    threads: 1
+    resources: thread=1
+    params:
+        job_name = BASE_NAME + "_combine_key_bam_stats",
+        t = str(1),
+        mem = str(2000),
+        vmem = str(2000 * 2),
+        walltime = WALLTIME,
+    shell:
+        "{SACGF_ENV_RUNNER} {COMBINE_KEY_BAM_STATS_SCRIPT} {input} {output}"
+
+

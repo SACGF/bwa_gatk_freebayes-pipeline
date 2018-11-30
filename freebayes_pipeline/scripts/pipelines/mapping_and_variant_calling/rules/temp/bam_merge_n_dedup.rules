@@ -1,0 +1,69 @@
+#NOTE: all intermediate files will be removed after rule gatk_realign_bam is done.
+
+
+max_merge_bam_t = 8
+merge_t = T_PER_SM if T_PER_SM <= max_merge_bam_t else max_merge_bam_t
+merge_mem = 3000 + (merge_t -1) * 1000
+dedup_mem = 6000 + (T_PER_SM -1) * 2000
+
+rule sample_merge:
+    """
+    Merge bam files for multiple units into one for the given sample.
+    If the sample has only one unit, a symlink will be created.
+    relies on the output of rule mapping
+    """
+    input:
+        bam =lambda wildcards: expand(
+                "mapped/{unit}.bam",
+                unit=config["sample_to_units"][wildcards.sample]),
+        idx =lambda wildcards: expand(
+                "mapped/{unit}.bam.bai",
+                unit=config["sample_to_units"][wildcards.sample])
+    output:
+            bam="merged/{sample}.bam",
+            idx="merged/{sample}.bam.bai"
+    threads: T_PER_SM
+    priority: 10
+    resources: thread=T_PER_SM, io=1
+    params:
+        job_name = BASE_NAME + "_mergeBam_" + "{sample}",
+        t = str(merge_t),
+        mem = str(merge_mem),
+        vmem = str(merge_mem * 2),
+        walltime = WALLTIME,
+    run:
+        if len(input.bam) > 1:
+            shell("{SAMBAMBA} merge -t {threads} {output.bam} {input.bam}")
+        else:
+            shell("sleep 3 && "
+                    "ln -s ../{input.bam} {output.bam} && "
+                    "ln -s ../{input.idx} {output.idx} ")
+
+rule mark_duplicate:
+    """
+    works after sample_merge to mark duplicates.
+    optional to skip by creating symbol links
+    """
+    input:
+        bam = "merged/{sample}.bam",
+        idx = "merged/{sample}.bam.bai"
+    output:
+        bam = "dedup/{sample}.bam",
+        idx = "dedup/{sample}.bam.bai"
+    threads: T_PER_SM
+    priority: 10
+    resources: thread=T_PER_SM, io=1
+    params:
+        job_name = BASE_NAME + "_dedup_" + "{sample}",
+        t = str(T_PER_SM),
+        mem = str(dedup_mem),
+        vmem = str(dedup_mem * 2),
+        walltime = WALLTIME,
+    run:
+        if 'marking_duplicates' in SKIPS:
+            shell("sleep 3 && "
+                    "ln -s ../{input.bam} {output.bam} && "
+                    "ln -s ../{input.idx} {output.idx} ")
+        else:
+            shell("{SAMBAMBA} markdup -t {threads} --tmpdir {TMP_DIR} "
+                    "--hash-table-size 524288 --overflow-list-size 400000 {input.bam} {output.bam}")

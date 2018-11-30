@@ -1,0 +1,33 @@
+"""
+run after rule variant_level_annotation
+"""
+
+rule convert_vcf_to_spreadsheet:
+    input:
+        vcf = rules.variant_level_annotation.output.vcf,
+        idx = rules.variant_level_annotation.output.idx
+    output:
+        'variants/' + BASE_NAME + '.{caller}.' + SPREADSHEET_FORMAT
+    threads: 1
+    priority: 10
+    resources: thread=1
+    params:
+        job_name = BASE_NAME + "_vcfToSprd_{caller}",
+        t = str(1),
+        mem = str(15000),
+        vmem = str(15000 * 2),
+        walltime = WALLTIME,
+    run:
+        if wildcards.caller == 'freebayes':
+            scheme_param = '--scheme Ion-Proton'
+        else:
+            scheme_param = ''
+        if not ADD_CHRIS_GENE_LIST:
+            skip_param = '--skip Chris-list'
+        else:
+            skip_param = ''
+        shell(
+            '{SACGF_ENV_RUNNER} {GENE_AND_SAMPLE_LEVEL_ANNOTATIONY_SCRIPT} -i {input.vcf} -o {output} '
+            '--still_save_empty_outfile '
+            '{scheme_param} {skip_param}'
+            )

@@ -1,0 +1,89 @@
+"""
+If not NOT_ANNOTATE, annotate the caller_out/*.vcf.gz files created by GATK and Freebayes
+Always split VCF by chrom and annotate them in parallel
+"""
+
+if NOT_ANNOTATE:
+    #just copy files from call_out/ to variants/
+    rule skip_annotation:
+        input:
+            vcf = 'caller_out/{base_name}.{{caller_out_tag}}.vcf.gz'.format(base_name=BASE_NAME),
+            idx = 'caller_out/{base_name}.{{caller_out_tag}}.vcf.gz.tbi'.format(base_name=BASE_NAME)
+        output:
+            vcf='variants/{base_name}.{{caller_out_tag,(gatk|freebayes)}}.vcf.gz'.format(base_name=BASE_NAME),
+            idx='variants/{base_name}.{{caller_out_tag,(gatk|freebayes)}}.vcf.gz.tbi'.format(base_name=BASE_NAME)
+        threads: 1
+        priority: 50
+        resources: thread=1
+        params:
+            job_name = BASE_NAME + "_skip_annotation_{caller_out_tag}",
+            t = str(1),
+            mem = str(2000),
+            vmem = str(2000 * 2),
+            walltime = WALLTIME
+        shell:
+            'cp {input} variants/ '
+else:
+    rule split_vcf_by_chr:
+        input:
+            vcf = 'caller_out/{base_name}.{{caller_out_tag}}.vcf.gz'.format(base_name=BASE_NAME),
+            idx = 'caller_out/{base_name}.{{caller_out_tag}}.vcf.gz.tbi'.format(base_name=BASE_NAME)
+        output:
+            'split_for_annotate/{base_name}.{{caller_out_tag,(gatk|freebayes)}}.{{chr_}}.vcf'.format(
+                base_name=BASE_NAME)
+        threads: 1
+        priority: 50
+        resources: thread=1
+        params:
+            job_name = BASE_NAME + "_split_vcf_for_annotate_{caller_out_tag}",
+            t = str(1),
+            mem = str(2000),
+            vmem = str(2000 * 2),
+            walltime = WALLTIME
+        shell:
+            '{BCFTOOLS} view {input.vcf} {wildcards.chr_} > {output}'
+
+    rule annotate_split_chr_vcf:
+        input:
+            rules.split_vcf_by_chr.output
+        output:
+            vcf = 'split_for_annotate/{base_name}.{{caller_out_tag,(gatk|freebayes)}}.{{chr_}}.annotated.vcf.gz'.format(base_name=BASE_NAME),
+            idx = 'split_for_annotate/{base_name}.{{caller_out_tag,(gatk|freebayes)}}.{{chr_}}.annotated.vcf.gz.tbi'.format(base_name=BASE_NAME)
+        threads: 1
+        priority: 50
+        resources: thread=1
+        params:
+            job_name = BASE_NAME + "_annotate_{caller_out_tag}_vcf_chr{chr_}",
+            t = str(1),
+            mem = str(5100),
+            vmem = str(5100 * 2),
+            walltime = WALLTIME,
+        run:
+            if wildcards.caller_out_tag == 'freebayes':
+                caller_specific_annot_param = '--noMultiALT'
+            else:
+                caller_specific_annot_param = ''
+            shell(
+                '{SACGF_ENV_RUNNER} {VARIANT_LEVEL_ANNOTATE_SCRIPT} {caller_specific_annot_param}  -i {input} -o {output.vcf} ')
+
+    rule concat_annotated_chr_vcf:
+        input:
+            vcfs = ['split_for_annotate/{base_name}.{{caller_out_tag}}.{chr_}.annotated.vcf.gz'.format(
+                base_name=BASE_NAME, chr_=chr_) for chr_ in ALL_CHRMS],
+            idxs = ['split_for_annotate/{base_name}.{{caller_out_tag}}.{chr_}.annotated.vcf.gz.tbi'.format(
+                base_name=BASE_NAME, chr_=chr_) for chr_ in ALL_CHRMS]
+        output:
+            vcf='variants/{base_name}.{{caller_out_tag,(gatk|freebayes)}}.vcf.gz'.format(base_name=BASE_NAME),
+            idx='variants/{base_name}.{{caller_out_tag,(gatk|freebayes)}}.vcf.gz.tbi'.format(base_name=BASE_NAME)
+        threads: 1
+        priority: 50
+        resources: thread=1
+        params:
+            job_name = BASE_NAME + "_concat_annotated_{caller_out_tag}_vcf",
+            t = str(1),
+            mem = str(3000),
+            vmem = str(3000 * 2),
+            walltime = WALLTIME,
+        shell:
+            '{BCFTOOLS} concat -O z {input.vcfs} > {output.vcf} && '
+            '{BCFTOOLS} index -t {output.vcf} '

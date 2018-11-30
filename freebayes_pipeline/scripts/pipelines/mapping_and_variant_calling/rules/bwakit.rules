@@ -1,0 +1,28 @@
+job_mem = 5500 + (T_PER_SM - 1) * 3000
+
+rule mapping:
+    """
+    perform mapping by bwa-kit
+    Output is a sorted BAM with index file;
+    Input is one BAM file saved to mapped/ dir as same as bwa' mappping rule
+    """
+    input:
+        lambda wildcards: SAMPLE_TO_BAM[wildcards.sample]
+    output:
+        bam='mapped/{sample}.bam',
+        idx='mapped/{sample}.bam.bai'
+    threads: T_PER_SM
+    priority: 30
+    resources: thread=T_PER_SM
+    params:
+        read_group=lambda wildcards: config["read_groups"][wildcards.sample],
+        job_name=lambda wildcards: BASE_NAME + "_bwakit_" + wildcards.sample,
+        t = str(T_PER_SM),
+        mem = str(job_mem),
+        vmem = str(job_mem * 2),
+        walltime = WALLTIME,
+    shell:
+        "{BWAKIT_RUN_BWAMEM} -s -o {TMP_DIR}/{wildcards.sample} -t {threads} "
+        "-R '{params.read_group}' {REF} "
+        "{input} | sh && mv {TMP_DIR}/{wildcards.sample}.aln.bam {output.bam} && "
+        "{SAMBAMBA} index -t {threads} {output.bam} "

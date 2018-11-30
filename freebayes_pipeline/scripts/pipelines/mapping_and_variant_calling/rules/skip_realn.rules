@@ -1,0 +1,24 @@
+"""
+works after rule mark_duplicate, to skip indel realignment
+"""
+
+rule skip_gatk_realn:
+    input:
+        bam = "dedup/{sample}.bam",
+        idx = "dedup/{sample}.bam.bai"
+    output:
+        bam="realn/{sample}.bam",
+        idx="realn/{sample}.bai"
+    threads: 1
+    priority: 30
+    resources: thread=1
+    params:
+        job_name= BASE_NAME + "_skip_Realn_" + "{sample}",
+        t = str(1),
+        mem = str(500),
+        vmem = str(1000),
+        walltime = WALLTIME,
+    shell:
+        "sleep 3 && "
+        "ln -sf ../{input.bam} {output.bam} "
+        "&& ln -sf ../{input.idx} {output.idx} "

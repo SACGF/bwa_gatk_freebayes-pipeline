@@ -1,0 +1,223 @@
+#TODO uncomment the two lines below to apply gatk_readBackedPhasing.rules
+# final_out_vcf = 'tmp/{base_name}.gatk_internal_filter_out.vcf.gz'.format(base_name=BASE_NAME)
+# final_out_vcf_idx = 'tmp/{base_name}.gatk_internal_filter_out.vcf.gz.tbi'.format(base_name=BASE_NAME)
+final_out_vcf = 'caller_out/{base_name}.gatk.vcf.gz'.format(base_name=BASE_NAME),
+final_out_vcf_idx = 'caller_out/{base_name}.gatk.vcf.gz.tbi'.format(base_name=BASE_NAME)
+
+if PERFORM_EXTRA_JOINT_GT:
+    vqsr_out_vcf = 'tmp/vqsr_out.vcf.gz'
+    vqsr_out_vcf_idx = 'tmp/vqsr_out.vcf.gz.tbi'
+else:
+    vqsr_out_vcf = final_out_vcf
+    vqsr_out_vcf_idx = final_out_vcf_idx
+
+vqsr_t = T_MAX if T_MAX <= 8 else 8 #for SNP VQSR only; 1 is for INDEL vqsr
+job_mem = 5500 + (vqsr_t -1 ) * 3000
+vqsr_java_mem = str(int((job_mem / 1.024)))
+job_vmem = str(job_mem * 2)
+job_mem = str(job_mem)
+if vqsr_t <= 4:
+    _gc_t = 2 if vqsr_t >= 2 else 1
+elif vqsr_t <= 8:
+    _gc_t = 4
+else:
+    _gc_t = 4
+
+an_for_snp = '-an QD -an MQ -an MQRankSum -an ReadPosRankSum -an FS -an SOR'
+an_for_snp = an_for_snp + ' -an DP' if DATA_TYPE == 'wgs' else an_for_snp
+an_for_indel = '-an QD -an FS -an SOR -an ReadPosRankSum -an MQRankSum'
+an_for_indel = an_for_indel + ' -an DP' if DATA_TYPE == 'wgs' else an_for_indel
+
+rule gatk_snp_recalibration:
+    input:
+        vcf="gatk_genotype/" + BASE_NAME + ".vcf.gz",
+        idx="gatk_genotype/" + BASE_NAME + ".vcf.gz.tbi",
+    output:
+        recal_file = temp('tmp/snp.recal'),
+        tranches_file = temp('tmp/snp.tranches')
+    threads: vqsr_t
+    priority: 50
+    params:
+        job_name = BASE_NAME + "_SNP_Recalibrate",
+        t = str(vqsr_t),
+        mem = job_mem,
+        vmem = job_vmem,
+        walltime = WALLTIME,
+    shell:
+        '{JAVA8} -Xmx{vqsr_java_mem}m -XX:ParallelGCThreads={_gc_t} -jar {GATK} '
+        '-T VariantRecalibrator -R {REF} -input {input.vcf} '
+        '-nt {threads} '
+        '-recalFile {output.recal_file} '
+        '-tranchesFile {output.tranches_file} '
+        '-mode SNP  '
+        '-resource:hapmap,known=false,training=true,truth=true,prior=15.0 {config[hapmap]}  '
+        '-resource:omni,known=false,training=true,truth=true,prior=12.0 {config[omni]}  '
+        '-resource:1000G,known=false,training=true,truth=false,prior=10.0 {config[g1k_snps]}  '
+        '-resource:dbsnp,known=true,training=false,truth=false,prior=2.0 {config[dbsnp]}  '
+        '{an_for_snp} '
+        '-tranche 100.0 -tranche 99.9 -tranche 99.0 -tranche 90.0 '
+        '--disable_auto_index_creation_and_locking_when_reading_rods '
+
+rule gatk_snp_apply_recalibration:
+    input:
+        vcf="gatk_genotype/" + BASE_NAME + ".vcf.gz",
+        idx="gatk_genotype/" + BASE_NAME + ".vcf.gz.tbi",
+        recal_file=rules.gatk_snp_recalibration.output.recal_file,
+        tranches_file=rules.gatk_snp_recalibration.output.tranches_file
+    output:
+        vcf = temp('tmp/recalibrated_snps_raw_indels.vcf.gz'),
+        idx = temp('tmp/recalibrated_snps_raw_indels.vcf.gz.tbi'),
+    threads: vqsr_t
+    priority: 50
+    params:
+        job_name = BASE_NAME + "_SNP_ApplyRecalibration",
+        t = str(vqsr_t),
+        mem = job_mem,
+        vmem = job_vmem,
+        walltime = WALLTIME,
+    shell:
+        '{JAVA8} -Xmx{vqsr_java_mem}m -XX:ParallelGCThreads={_gc_t} -jar {GATK} '
+        '-T ApplyRecalibration -R {REF} -input {input.vcf} '
+        '-nt {threads} '
+        '-mode SNP '
+        '-recalFile {input.recal_file} '
+        '-tranchesFile {input.tranches_file} '
+        '-o {output.vcf} '
+        '--ts_filter_level 99.9 ' #seeking higher sensitivity than the one in the documentation (99.5)
+
+t_for_indel_vqsr = 1
+indel_vqsr_java_mem = 9500
+mem_for_indel_vqsr = 9000
+vmem_for_indel_vqsr = 18000
+rule gatk_indel_recalibration:
+    input:
+        vcf=rules.gatk_snp_apply_recalibration.output.vcf,
+        idx=rules.gatk_snp_apply_recalibration.output.idx
+    output:
+        recal_file = temp('tmp/indel.recal'),
+        tranches_file = temp('tmp/indel.tranches')
+    threads: 1
+    priority: 50
+    params:
+        job_name = BASE_NAME + "_INDEL_Recalibrate",
+        t = t_for_indel_vqsr,
+        mem = mem_for_indel_vqsr,
+        vmem = vmem_for_indel_vqsr,
+        walltime = WALLTIME,
+    shell:
+        '{JAVA8} -Xmx{indel_vqsr_java_mem}m -XX:ParallelGCThreads=1 -jar {GATK} '
+        '-T VariantRecalibrator -R {REF} -input {input.vcf} '
+        '-nt {threads} '
+        '-mode INDEL '
+        '-recalFile {output.recal_file} '
+        '-tranchesFile {output.tranches_file} '
+        '-resource:mills,known=false,training=true,truth=true,prior=12.0 {config[mills_indels]}  '
+        '-resource:dbsnp,known=true,training=false,truth=false,prior=2.0 {config[dbsnp]}  '
+        '{an_for_indel} '
+        '-tranche 100.0 -tranche 99.9 -tranche 99.0 -tranche 90.0 '
+        '--disable_auto_index_creation_and_locking_when_reading_rods '
+        '--maxGaussians 4 ' #the document recommends 4
+
+rule gatk_indel_apply_recalibration:
+    input:
+        vcf=rules.gatk_snp_apply_recalibration.output.vcf,
+        idx=rules.gatk_snp_apply_recalibration.output.idx,
+        recal_file=rules.gatk_indel_recalibration.output.recal_file,
+        tranches_file=rules.gatk_indel_recalibration.output.tranches_file
+    output:
+        vcf = vqsr_out_vcf,
+        idx = vqsr_out_vcf_idx
+    threads: 1 
+    priority: 50
+    params:
+        job_name = BASE_NAME + "_INDEL_ApplyRecalibration",
+        t = t_for_indel_vqsr,
+        mem = mem_for_indel_vqsr,
+        vmem = vmem_for_indel_vqsr,
+        walltime = WALLTIME,
+    shell:
+        '{JAVA8} -Xmx{indel_vqsr_java_mem}m -XX:ParallelGCThreads=1 -jar {GATK} '
+        '-T ApplyRecalibration -R {REF} -input {input.vcf} '
+        '-nt {threads} '
+        '-mode INDEL '
+        '-recalFile {input.recal_file} '
+        '-tranchesFile {input.tranches_file} '
+        '-o {output.vcf} '
+        '--ts_filter_level 99.0 ' #same as the one in the documentation (99.0)
+
+#if select_var_t is too large, it may cause a Java error and fail
+select_var_t = 8 if vqsr_t >= 8 else vqsr_t
+job_mem = 5500 + (select_var_t -1 ) * 3500
+select_var_mem = int((job_mem / 1.024))
+job_vmem = job_mem * 2
+
+if PERFORM_EXTRA_JOINT_GT:
+    sn_args = ['--sample_name %s ' % sm for sm in SAMPLE_NAMES]
+    sn_args = ''.join(sn_args)
+    rule extract_sample_variants:
+        input:
+            vcf=rules.gatk_indel_apply_recalibration.output.vcf,
+            idx=rules.gatk_indel_apply_recalibration.output.idx
+        output:
+            vcf='tmp/samples_selected.vqsr_out.vcf.gz',
+            idx='tmp/samples_selected.vqsr_out.vcf.gz.tbi'
+        threads: select_var_t
+        priority: 50
+        params:
+            job_name = BASE_NAME + "_extract_variants_after_VQSR",
+            t = str(select_var_t),
+            mem = job_mem,
+            vmem = job_vmem,
+            walltime = WALLTIME,
+        shell:
+            '{JAVA8} -Xmx{select_var_mem}m -XX:ParallelGCThreads=1 -jar {GATK} '
+            '-T SelectVariants -R {REF} '
+            '-nt {threads} '
+            '-V {input.vcf} '
+            '-o {output.vcf} '
+            '--excludeNonVariants '
+            '--removeUnusedAlternates '
+            '{sn_args} '
+
+    # remove STAR_NON_VARIANTS_IN_VCF #this is a bug of GATK SelectVariants, and not fixed in 3.8 version
+    rule remove_star_non_variants_in_vcf:
+        input:
+            vcf=rules.extract_sample_variants.output.vcf,
+            idx=rules.extract_sample_variants.output.idx
+        output:
+            vcf=final_out_vcf,
+            idx=final_out_vcf_idx
+        threads: 1
+        priority: 50
+        params:
+            job_name = BASE_NAME + "_remove_star_non_variants_in_vcf",
+            t = 1,
+            mem = 4500,
+            vmem = 8000,
+            walltime = WALLTIME,
+        shell:
+            '''
+            {BCFTOOLS} view -O z --exclude "ALT='*'" {input.vcf} > {output.vcf}
+            {BCFTOOLS} index -t {output.vcf}
+            '''
+
+    # #Remove the vt normalize step. Since V3.5, GATK SelectVariants does normalizing selected variants.
+    # rule vt_normalize_gatk_vcf:
+        # input:
+            # vcf=rules.remove_star_non_variants_in_vcf.output.vcf,
+            # idx=rules.remove_star_non_variants_in_vcf.output.idx
+        # output:
+            # vcf=final_out_vcf,
+            # idx=final_out_vcf_idx
+        # threads: 1
+        # priority: 50
+        # params:
+            # job_name = BASE_NAME + "_vt_normalize_gatk_vcf",
+            # t = str(1),
+            # mem = str(3000),
+            # vmem = str(3000*2),
+            # walltime = WALLTIME
+        # shell:
+            # '{VT} normalize -r {REF} {input.vcf} | {BCFTOOLS} view -O z - > {output.vcf} && '
+            # '{BCFTOOLS} index -t {output.vcf}'
+

@@ -1,0 +1,65 @@
+"""
+run after rule gatk_realn or skip_realn
+"""
+
+t_bqsr = T_PER_SM if T_PER_SM < 16 else 16
+bqsr_mem = 5000 + (t_bqsr -1) * 1600
+mem = str(int(bqsr_mem * 1.024))
+vmem = str(bqsr_mem * 2)
+
+if t_bqsr <= 5:
+    gc_threads_bqsr = 1
+elif t_bqsr <= 9:
+    gc_threads_bqsr = 4
+elif t_bqsr <= 17:
+    gc_threads_bqsr = 8
+else:
+    gc_threads_bqsr = 12
+
+rule gatk_recalibrate_info:
+    input:
+        bam = "dedup/{sample}.bam",
+        idx = "dedup/{sample}.bam.bai"
+    output:
+        temp("bqsr/{sample}.recal_data.table")
+    threads: t_bqsr
+    priority: 30
+    resources: thread=t_bqsr
+    params:
+        job_name= BASE_NAME + "_bqsrInfo_" + "{sample}",
+        t = str(t_bqsr),
+        mem = mem,
+        vmem = vmem,
+        walltime = WALLTIME,
+    shell:
+        '{JAVA8} -Xmx{bqsr_mem}m -XX:ParallelGCThreads={gc_threads_bqsr} -jar {GATK} '
+        '-T BaseRecalibrator -R {REF} -I {input.bam} -o {output} '
+        '-nct {threads} '
+        '--knownSites {config[dbsnp]} '
+        '--knownSites {config[mills_indels]} '
+        '--knownSites {config[g1k_indels]} '
+        '--disable_auto_index_creation_and_locking_when_reading_rods '
+        '{GATK_REGION_PARAM} '
+
+rule gatk_recalibrate_bam:
+    input:
+        bam = "dedup/{sample}.bam",
+        grp="bqsr/{sample}.recal_data.table"
+    output:
+        bam="bqsr/{sample}.bam",
+        idx="bqsr/{sample}.bai"
+    threads: t_bqsr
+    priority: 30
+    resources: thread=t_bqsr, io=1
+    params:
+        job_name= BASE_NAME + "_bqsr_" + "{sample}",
+        t = str(t_bqsr),
+        mem = mem,
+        vmem = vmem,
+        walltime = WALLTIME,
+    shell:
+        '{JAVA8} -Xmx{bqsr_mem}m -XX:ParallelGCThreads={gc_threads_bqsr} -jar {GATK} '
+        '-T PrintReads -R {REF} -I {input.bam} -o {output.bam} '
+        '-nct {threads} '
+        '-BQSR {input.grp} '
+        '--disable_indel_quals '

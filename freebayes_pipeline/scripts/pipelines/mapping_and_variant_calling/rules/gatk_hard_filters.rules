@@ -1,0 +1,37 @@
+"""
+run after rule gatk_genotypeGVCFs.rules
+"""
+#TODO use DATA_TYPE to determine if VQSR or hard-filter is needed
+#TODO write rules here rather than using a pytyon script GATK_DNA_HARD_FILTERS_SCRIPT
+
+t = T_MAX if T_MAX <= 6 else 6
+mem = str(6000) # fixed value as it is also fixed (-Xmx5g) in GATK_DNA_HARD_FILTERS_SCRIPT
+vmem = str(6000 * 2)
+
+rule gatk_hard_filters:
+    input:
+        vcf=rules.combine_chr_gt_vcf.output.vcf,
+        idx=rules.combine_chr_gt_vcf.output.idx
+    output:
+        #TODO uncomment the two lines below to apply gatk_readBackedPhasing.rules
+        # vcf = 'tmp/{base_name}.gatk_internal_filter_out.vcf.gz'.format(base_name=BASE_NAME),
+        # idx = 'tmp/{base_name}.gatk_internal_filter_out.vcf.gz.tbi'.format(base_name=BASE_NAME)
+        vcf = 'caller_out/{base_name}.gatk.vcf.gz'.format(base_name=BASE_NAME),
+        idx = 'caller_out/{base_name}.gatk.vcf.gz.tbi'.format(base_name=BASE_NAME)
+    threads: t
+    priority: 50
+    resources: thread=t
+    params:
+        job_name = BASE_NAME + "_HardFilt-GATK",
+        snp_filters = config['gatk_snp_filters'],
+        indel_filters = config['gatk_indel_filters'],
+        t = str(t),
+        mem = mem,
+        vmem = vmem,
+        walltime = WALLTIME
+    shell:
+        "{SACGF_ENV_RUNNER} {GATK_DNA_HARD_FILTERS_SCRIPT} -i {input.vcf} -o {output.vcf} "
+        "--gatkJar {GATK} --ref {REF} "
+        "--snpFilters '{params.snp_filters}' "
+        "--indelFilters '{params.indel_filters}' "
+        "--threads {threads} "

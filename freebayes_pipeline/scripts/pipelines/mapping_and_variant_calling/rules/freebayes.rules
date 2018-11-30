@@ -1,0 +1,346 @@
+"""
+to run Freebayes to create VCF file, with SAMPLE_TO_ANALYSIS_READY_BAM as input (CALL_REGION_BED is needed for now)
+"""
+import os
+
+_call_region_bed = 'freebayes_tmp/call_regions.bed'
+rule create_call_region_bed_for_freebayes:
+    #create a non-duplicated call regions bed for Freebayes
+    input:
+        CALL_REGION_BED
+    output:
+        _call_region_bed
+    threads: 1
+    priority: 50
+    resources: thread=1
+    params:
+        job_name = BASE_NAME + "_create-call-regions-for-Freebayes",
+        t = str(1),
+        mem = str(3000),
+        vmem = str(3000*2),
+        walltime = WALLTIME
+    shell:
+        '{BEDTOOLS} merge -i {input} > {output}'
+
+freebayes = FREEBAYES_DIR + '/bin/freebayes'
+freebayes_filters = config["freebayes_filter_param"]
+if freebayes_filters:
+    fb_filter_command = "{BCFTOOLS} view -i '{freebayes_filters}' |".format(
+            BCFTOOLS=BCFTOOLS, freebayes_filters=freebayes_filters)
+else:
+    fb_filter_command = ''
+
+# #call variants on each sample individually; remove Genotype section
+# #split, normalize, and perform filtration (if needed)
+# #Note here filteration is done after splitting
+#TODO Keep individual VCF from the 1st run; remove --drop-genotypes and make sure the ALT% is correct
+rule freebayes_call_on_each_sample:
+    input:
+        bam = lambda wildcards: SAMPLE_TO_ANALYSIS_READY_BAM[wildcards.sample],
+        bam_index = lambda wildcards: SAMPLE_TO_ANALYSIS_READY_BAM_INDEX[wildcards.sample],
+        call_region = _call_region_bed
+    output:
+        vcf = 'freebayes_tmp/calls/{sample}.vcf.gz',
+        idx = 'freebayes_tmp/calls/{sample}.vcf.gz.tbi'
+    threads: 1
+    priority: 50
+    resources: thread=1
+    params:
+        job_name=lambda wildcards: BASE_NAME + "_Freebayes-call-" + wildcards.sample,
+        t = str(1),
+        mem = str(12000),
+        vmem = str(12000*2),
+        walltime = WALLTIME
+    shell:
+        '{freebayes} -f {REF} {config[freebayes_call_param]} '
+        '--targets {_call_region_bed} '
+        '{input.bam} | '
+        '{BCFTOOLS} view --drop-genotypes | '
+        '{VT} decompose -s - | '
+        '{fb_filter_command} '
+        '{VT} decompose_blocksub - | '
+        '{VT} normalize -r {REF} - | '
+        '{BCFTOOLS} view -O z - > {output.vcf} && {BCFTOOLS} index -t {output.vcf} '
+
+        # VT: Normalized variants may have their positions changed; in such cases, the normalized variants are reordered and output in an ordered fashion.
+
+# #merge variants of all samples; drop duplicates
+rule merge_freebayes_individual_call_vcfs:
+    input:
+        vcf = ['freebayes_tmp/calls/{sm}.vcf.gz'.format(sm=sm) for sm in SAMPLE_NAMES],
+        idx = ['freebayes_tmp/calls/{sm}.vcf.gz.tbi'.format(sm=sm) for sm in SAMPLE_NAMES]
+    output:
+        vcf = 'freebayes_tmp/merged.sites.vcf.gz',
+        idx = 'freebayes_tmp/merged.sites.vcf.gz.tbi'
+    threads: 1
+    priority: 50
+    resources: thread=1
+    params:
+        job_name = BASE_NAME + "_Merge-Freebayes-call-VCFs",
+        t = str(1),
+        mem = str(4000),
+        vmem = str(4000*2),
+        walltime = WALLTIME
+    shell:
+        '{BCFTOOLS} concat -O z --allow-overlaps --remove-duplicates {input.vcf} > {output.vcf} && '
+        '{BCFTOOLS} index -t {output.vcf} '
+
+# #extract SNPs and non-SNPs from the merged.sites.vcf.gz
+rule extract_snps_and_non_snps_from_merged_sites:
+    input:
+        vcf = rules.merge_freebayes_individual_call_vcfs.output.vcf,
+        idx = rules.merge_freebayes_individual_call_vcfs.output.idx
+    output:
+        snp_vcf = 'freebayes_tmp/snps.vcf.gz',
+        snp_vcf_idx = 'freebayes_tmp/snps.vcf.gz.tbi',
+        non_snp_vcf = 'freebayes_tmp/non_snps.vcf'
+    threads: 1
+    priority: 50
+    resources: thread=1
+    params:
+        job_name = BASE_NAME + "_Extract-Freebayes-SNPs-and-non-SNPs",
+        t = str(1),
+        mem = str(3500),
+        vmem = str(3500*2),
+        walltime = WALLTIME
+    shell:
+        '{BCFTOOLS} view -O z --types snps {input.vcf} > {output.snp_vcf} && '
+        '{BCFTOOLS} index -t {output.snp_vcf} && '
+        '{BCFTOOLS} view --exclude-types snps {input.vcf} > {output.non_snp_vcf} '
+
+# #For each individual, for the merged SNP sites, calculate the count of alt allele
+# This requires a lot of memory for Amplicon....
+_mem_for_snp_alt_count = 15000 if DATA_TYPE == Amplicon else 10000
+_vmem_for_snp_alt_count = 2 * _mem_for_snp_alt_count
+rule freebayes_count_alt_on_snp_sites:
+    input:
+        snp_vcf = rules.extract_snps_and_non_snps_from_merged_sites.output.snp_vcf,
+        snp_vcf_idx = rules.extract_snps_and_non_snps_from_merged_sites.output.snp_vcf_idx,
+        bam = lambda wildcards: SAMPLE_TO_ANALYSIS_READY_BAM[wildcards.sample],
+        bam_index = lambda wildcards: SAMPLE_TO_ANALYSIS_READY_BAM_INDEX[wildcards.sample]
+    output:
+        vcf = 'freebayes_tmp/snp_alt_counts/{sample}.vcf.gz',
+        idx = 'freebayes_tmp/snp_alt_counts/{sample}.vcf.gz.tbi'
+    threads: 1
+    priority: 50
+    resources: thread=1
+    params:
+        job_name=lambda wildcards: BASE_NAME + "_Freebayes-count-SNP-ALT-" + wildcards.sample,
+        t = 1,
+        mem = _mem_for_snp_alt_count,
+        vmem = _vmem_for_snp_alt_count,
+        walltime = '160:00:00'
+    shell:
+        "{freebayes} -f {REF} {config[freebayes_call_param]} "
+        "-@ {input.snp_vcf} "
+        "--only-use-input-alleles "
+        "--targets {_call_region_bed} "
+        "{input.bam} | "
+        "{VT} decompose -s - | "
+        "{VT} normalize -r {REF} - | "
+        "{BCFTOOLS} view -O z - > {output.vcf} && {BCFTOOLS} index -t {output.vcf} "
+        #Freebayes often merge the variants on the same positions, so we need to split and normalize them again
+
+#find the non-overlapping INDELs and save them into VCF file
+nonoverlap_non_snp_site_dir = 'freebayes_tmp/nonoverlap_non_snp_site/' #keep the ending /
+rule create_vcf_n_bed_for_non_snp_site_for_freebayes:
+    input:
+        rules.extract_snps_and_non_snps_from_merged_sites.output.non_snp_vcf #'freebayes_tmp/non_snps.vcf'
+    output:
+        touch('freebayes_tmp/done_creating_invcfs_and_beds')
+    threads: 1
+    priority: 80
+    resources: thread=1
+    params:
+        job_name=BASE_NAME + "_create-invcf-and-bed-for-Freebayes",
+        t = str(1),
+        mem = str(6000),
+        vmem = str(6000*2),
+        walltime = WALLTIME
+    run:
+        orig_variants = []
+        index_to_orig_variants = {}
+        orig_bed_regions = [] #with id
+        id_ = 0 #also the number of non-SNP variants
+        for line in open(input[0]):
+            if (not line.startswith('#')) and line.rstrip():
+                orig_variants.append(line)
+                index_to_orig_variants[str(id_)] = line
+                chr_, pos, _, ref, alt = line.rstrip().split('\t')[:5]
+                start = int(pos)
+                end = start + max([len(ref), len(alt)])
+                orig_bed_regions.append([chr_, start, end, str(id_)])
+                id_ += 1
+
+        #find the overlapping regions
+        from pybedtools import BedTool
+        merged_regiones_bed = BedTool(orig_bed_regions).merge(c=4, o='collapse')
+        merged_groups = []
+        for r in merged_regiones_bed:
+            ids = r[3].split(',')
+            merged_groups.append(ids)
+
+        #group the non-overlapping regions
+        #For 33 WES samples, there are 283903 non-SNP variants
+        non_overlap_regions = [] #the numbers of ids are descending, with the first list containing the most
+        for groups in merged_groups:
+            for i, a_id in enumerate(groups):
+                try:
+                    non_overlap_regions[i].append(a_id)
+                except IndexError:
+                    non_overlap_regions.append([a_id])
+
+        #make BED and VCF files from the non_overlap_regions
+        shell('rm -rf %s && mkdir %s' % (nonoverlap_non_snp_site_dir, nonoverlap_non_snp_site_dir))
+        _vcf_header = "##fileformat=VCFv4.1\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+        for i, id_group in enumerate(non_overlap_regions):
+            out_vcf = nonoverlap_non_snp_site_dir + '%s.vcf' % i
+            out_vcf_handle = open(out_vcf, 'w')
+            out_vcf_handle.write(_vcf_header)
+            out_beds = []
+            for _id in id_group:
+                out_vcf_handle.write(index_to_orig_variants[_id])
+                chr_, start, end, indel_id = orig_bed_regions[int(_id)]
+                start = start - 50
+                end = end + 50
+                out_beds.append([chr_, start, end])
+            out_vcf_handle.close()
+            shell('{BGZIP} ' + out_vcf)
+            shell('{BCFTOOLS} index -t ' + out_vcf + '.gz')
+            merged_out_bed = BedTool(out_beds).merge().saveas(nonoverlap_non_snp_site_dir + '%s.bed' % i)
+
+# This bug with overlapping INDELs is not fixed with version 1.2 as tested on 16/5/2018
+# #For each individual, with each non-snp site, calculate the count of alt allele
+# use all vcf.gz and bed in the nonoverlap_non_snp_site_dir
+freebayes_vcf_header = config["freebayes_vcf_header"]
+rule freebayes_count_alt_on_each_non_snp_site:
+    input:
+        done = 'freebayes_tmp/done_creating_invcfs_and_beds',
+        bam = lambda wildcards: SAMPLE_TO_ANALYSIS_READY_BAM[wildcards.sample],
+        bam_index = lambda wildcards: SAMPLE_TO_ANALYSIS_READY_BAM_INDEX[wildcards.sample]
+    output:
+        'freebayes_tmp/non_snp_alt_counts_before_normalization/{sample}.vcf'
+    threads: 1
+    priority: 50
+    resources: thread=1
+    params:
+        job_name=lambda wildcards: BASE_NAME + "_Freebayes-count-alt-at-non-SNPs-" + wildcards.sample,
+        t = str(1),
+        mem = str(6000),
+        vmem = str(6000*2),
+        walltime = '240:00:00'
+    #use a corrected header file here; and >> those lines not starting with ## to the herder
+    run:
+        shell('cp {freebayes_vcf_header} {output}')
+        sample_name_line = '#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t' + wildcards.sample
+        shell('echo "{sample_name_line}" >> {output}')
+        all_files_in_site_dir = os.listdir(nonoverlap_non_snp_site_dir)
+        invcfs = [f for f in all_files_in_site_dir if f.endswith('.vcf.gz')]
+        numbers = sorted([int(f[:-7]) for f in invcfs])
+        invcfs = ['%s.vcf.gz' % i for i in numbers]
+        beds = [f.split('.')[0]+'.bed' for f in invcfs] #invcf and bed must match
+        invcfs = [nonoverlap_non_snp_site_dir+f for f in invcfs]
+        beds = [nonoverlap_non_snp_site_dir+f for f in beds]
+        for vcf, bed in zip(invcfs, beds):
+            shell(
+                "{freebayes} -f {REF} {config[freebayes_call_param]} "
+                "-@ {vcf} --only-use-input-alleles "
+                "--targets {bed} "
+                "{input.bam} | "
+                "grep -v '^#' >> {output} || : "
+                )
+
+# #Normalize and BGZIP-ed the non_snp_alt_count
+rule normalize_non_snp_counts_for_freebays:
+    input:
+        rules.freebayes_count_alt_on_each_non_snp_site.output
+    output:
+        vcf = 'freebayes_tmp/non_snp_alt_counts/{sample}.vcf.gz',
+        idx = 'freebayes_tmp/non_snp_alt_counts/{sample}.vcf.gz.tbi'
+    threads: 1
+    priority: 50
+    resources: thread=1
+    params:
+        job_name=lambda wildcards: BASE_NAME + "_normalize-non-SNP-alt-count-" + wildcards.sample,
+        t = str(1),
+        mem = str(3000),
+        vmem = str(3000*2),
+        walltime = WALLTIME
+    shell:
+        "{VT} normalize -r {REF} {input} | "
+        "{VT} sort -o {output.vcf} - && "
+        "{BCFTOOLS} index -t {output.vcf} "
+
+# #For each individual, merge the snp and non-snp alt counts
+rule merge_indiv_freebayes_alt_count:
+    input:
+        snp_vcf = 'freebayes_tmp/snp_alt_counts/{sample}.vcf.gz',
+        snp_vcf_idx = 'freebayes_tmp/snp_alt_counts/{sample}.vcf.gz.tbi',
+        non_snp_vcf = 'freebayes_tmp/non_snp_alt_counts/{sample}.vcf.gz',
+        non_snp_vcf_idx = 'freebayes_tmp/non_snp_alt_counts/{sample}.vcf.gz.tbi'
+    output:
+        vcf = 'freebayes_tmp/merged_alt_counts/{sample}.vcf.gz',
+        vcf_idx = 'freebayes_tmp/merged_alt_counts/{sample}.vcf.gz.tbi'
+    threads: 1
+    priority: 50
+    resources: thread=1
+    params:
+        job_name=lambda wildcards: BASE_NAME + "_merge-Freebayes-count-" + wildcards.sample,
+        t = str(1),
+        mem = str(4000),
+        vmem = str(4000*2),
+        walltime = WALLTIME
+    shell:
+        '{BCFTOOLS} concat --allow-overlaps -O z {input.snp_vcf} {input.non_snp_vcf} > {output.vcf} && '
+        '{BCFTOOLS} index -t {output.vcf}'
+
+# #Merge alt counts for all samples and get the final output
+rule merge_all_samples_freebayes_alt_count:
+    input:
+        vcf = ['freebayes_tmp/merged_alt_counts/{sm}.vcf.gz'.format(sm=sm) for sm in SAMPLE_NAMES],
+        idx = ['freebayes_tmp/merged_alt_counts/{sm}.vcf.gz.tbi'.format(sm=sm) for sm in SAMPLE_NAMES]
+    output:
+        vcf = 'freebayes_tmp/{base_name}.freebayes.vcf'.format(base_name=BASE_NAME) #plain text VCF here, as igvtools sort will be used
+    threads: 1
+    priority: 50
+    resources: thread=1
+    params:
+        job_name = BASE_NAME + "_Merge-Freebayes-ALT-count-for-all-samples",
+        t = str(1),
+        mem = str(4000),
+        vmem = str(4000*2),
+        walltime = WALLTIME
+    run:
+        if len(SAMPLE_NAMES) > 1:
+            shell('{BCFTOOLS} merge --info-rules AO:sum,RO:sum -m none {input.vcf} > {output.vcf} ')
+            #By default DP, AC, AN and AF will be correct
+        else:
+            shell('{BCFTOOLS} view {input.vcf} > {output.vcf}') #unzip the file to get the plain text VCF
+    # shell:
+        # '{BCFTOOLS} merge --info-rules AO:sum,RO:sum -m none {input.vcf} > {output.vcf} '
+
+# #To creat the final ouput: chr-sort merged vcf by igvtools (java 7 is used), and remove nocalls and output to .vcf.gz format
+rule chr_sort_merged_freebayes_vcf:
+    input:
+        rules.merge_all_samples_freebayes_alt_count.output
+    output:
+        vcf = 'freebayes_tmp/{base_name}.chr_sorted.freebayes.vcf'.format(base_name=BASE_NAME),
+        bgzip_vcf = 'caller_out/{base_name}.freebayes.vcf.gz'.format(base_name=BASE_NAME), #final output
+        idx = 'caller_out/{base_name}.freebayes.vcf.gz.tbi'.format(base_name=BASE_NAME)
+    threads: 1
+    priority: 50
+    resources: thread=1
+    params:
+        job_name = BASE_NAME + "_Chr-sort-merged-Freebayes-VCF",
+        t = 1,
+        mem = 10000,
+        vmem = 20000,
+        walltime = '5:00:00'
+    shell:
+        'module load java/java-jdk-1.7.0_80 && '
+        '{IGVTOOLS} sort {input} {output.vcf} && '
+        '{BCFTOOLS} view --exclude-uncalled -O z {output.vcf} > {output.bgzip_vcf} && '
+        '{BCFTOOLS} index -t {output.bgzip_vcf} && '
+        'rm -f igv.log'
+
+

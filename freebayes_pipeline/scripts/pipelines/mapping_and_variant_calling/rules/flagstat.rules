@@ -1,0 +1,35 @@
+"""
+"""
+
+rule flagstat_each_bam:
+    input:
+        bam = lambda wildcards: SAMPLE_TO_ANALYSIS_READY_BAM[wildcards.sample],
+        idx = lambda wildcards: SAMPLE_TO_ANALYSIS_READY_BAM_INDEX[wildcards.sample]
+    output:
+        temp('bam_stats/{sample}.flagstat')
+    threads: 1
+    resources: thread=1
+    params:
+        job_name = BASE_NAME + "_{sample}_flagstat",
+        t = str(1),
+        mem = str(2500),
+        vmem = str(4500 * 2),
+        walltime = WALLTIME,
+    shell:
+        "{SAMBAMBA} flagstat {input.bam} > {output}"
+
+rule combine_flagstat:
+    input:
+        expand('bam_stats/{sample}.flagstat', sample=SAMPLE_NAMES)
+    output:
+        'bam_stats/{BASE_NAME}.flagstat.csv'
+    threads: 1
+    resources: thread=1
+    params:
+        job_name = BASE_NAME + "_flagstat",
+        t = str(1),
+        mem = str(1500),
+        vmem = str(1500 * 2),
+        walltime = WALLTIME,
+    shell:
+        "{SACGF_ENV_RUNNER} {COMBINE_FLAGSTAT_SCRIPT} {input} {output}"

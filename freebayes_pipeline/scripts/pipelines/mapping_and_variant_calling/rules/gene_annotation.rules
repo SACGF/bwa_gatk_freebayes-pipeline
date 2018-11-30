@@ -1,0 +1,78 @@
+"""
+For WGS and WES, input is the  'Tiers_1-5' vcf; For Panel and Amplicon-Panel, it is the unfiltered VCF
+"""
+
+
+if DATA_TYPE in [WGS, WES]:
+    filter_str = 'Tiers_1-5.'
+else:
+    filter_str = ''
+
+if DATA_TYPE in [WGS, WES]:
+    if SAMPLE_NAMES:
+        if len(SAMPLE_NAMES) <= 6:
+            mem_for_gene_annotate = 24000
+        elif len(SAMPLE_NAMES) <= 16:
+            mem_for_gene_annotate = 32000
+        else:
+            mem_for_gene_annotate = 48000
+    else: # gVCF was fed
+        mem_for_gene_annotate = 50000
+else:
+    if SAMPLE_NAMES:
+        if len(SAMPLE_NAMES) <= 6:
+            mem_for_gene_annotate = 12000
+        elif len(SAMPLE_NAMES) <= 16:
+            mem_for_gene_annotate = 16000
+        elif len(SAMPLE_NAMES) <= 100:
+            mem_for_gene_annotate = 30000
+        else:
+            mem_for_gene_annotate = 40000
+    else: # gVCF was fed
+        mem_for_gene_annotate = 35000
+
+rule gene_annotation:
+    input:
+        vcf = 'variants/{base_name}.{{caller,(gatk|freebayes)}}.{filter_str}vcf.gz'.format(
+                base_name=BASE_NAME, filter_str=filter_str),
+        idx = 'variants/{base_name}.{{caller,(gatk|freebayes)}}.{filter_str}vcf.gz.tbi'.format(
+                base_name=BASE_NAME, filter_str=filter_str)
+    output:
+        'variants/{base_name}.{{caller,(gatk|freebayes)}}.{filter_str}{spreadsheet_format}'.format(
+                base_name=BASE_NAME, filter_str=filter_str, spreadsheet_format=SPREADSHEET_FORMAT)
+    threads: 1
+    priority: 50
+    resources: thread=1
+    params:
+        job_name = BASE_NAME + "_geneAnnot_for_{caller}",
+        t = str(1),
+        mem = str(mem_for_gene_annotate),
+        vmem = str(mem_for_gene_annotate * 2),
+        walltime = WALLTIME,
+    run:
+        scheme_param = ''
+        call_specific_annot_param = ''
+        if DATA_TYPE in [Panel, Amplicon]:
+            scheme_param = '--scheme no-gene-annotation'
+        if wildcards.caller == 'freebayes':#Not presenting GT; Focuse only on ATL%
+            call_specific_annot_param = '--genotype_fields DP,AO --add SM-ALT-Percentage-Outliers'
+        if ADD_VAF_COLUMN:
+            call_specific_annot_param += ' --add SM-ALT-Percentage '
+        if wildcards.caller == 'gatk' and TRIO:
+            trio_param = '--trio ' + TRIO
+        else:
+            trio_param = ''
+        if not ADD_CHRIS_GENE_LIST:
+            skip_param = '--skip Chris-list'
+        else:
+            skip_param = ''
+        if DATA_TYPE == WES and len(SAMPLE_NAMES) > 30:
+            extra_parameters = '--reduce_column_number '
+        else:
+            extra_parameters = ''
+        shell(
+            '{SACGF_ENV_RUNNER} {GENE_AND_SAMPLE_LEVEL_ANNOTATIONY_SCRIPT} -i {input.vcf} -o {output} '
+            '--still_save_empty_outfile '
+            '{scheme_param} {call_specific_annot_param} {skip_param} {trio_param} '
+            '{extra_parameters} '
+            )
